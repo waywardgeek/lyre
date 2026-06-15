@@ -38,11 +38,12 @@ const (
 	TypeGenerator                    // gen T
 	TypeLock                         // lock
 	TypeUnit                         // unit
+	TypeRef                          // ref T — reference (Go *T)
 )
 
 var typeExprKindNames = [...]string{
 	"Named", "Optional", "Union", "Sequence", "Map", "Tuple",
-	"Func", "Channel", "Generator", "Lock", "Unit",
+	"Func", "Channel", "Generator", "Lock", "Unit", "Ref",
 }
 
 func (k TypeExprKind) String() string {
@@ -94,6 +95,11 @@ type TupleType struct {
 type FuncType struct {
 	Params []TypeExpr
 	Return TypeExpr
+}
+
+// RefType holds the inner type for ref T — a reference (maps to Go *T).
+type RefType struct {
+	Inner TypeExpr
 }
 
 // ChannelType holds the element type for channel<T>.

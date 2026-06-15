@@ -1707,6 +1707,19 @@ func (p *Parser) parseBaseType() (*ast.TypeExpr, error) {
 	case TIdent:
 		name := p.next()
 
+		// ref T — reference type (maps to Go *T)
+		if name.Text == "ref" {
+			inner, err := p.parseTypeExpr()
+			if err != nil {
+				return nil, err
+			}
+			return &ast.TypeExpr{
+				Kind: ast.TypeRef,
+				Data: ast.RefType{Inner: *inner},
+				Span: ast.Span{Start: ast.Pos{File: p.lex.filename, Line: start.Line, Column: start.Column}, End: inner.Span.End},
+			}, nil
+		}
+
 		// Special case: map[K]V
 		if name.Text == "map" && p.peek().Kind == TLBracket {
 			p.next() // [

@@ -514,8 +514,16 @@ func lyricTypeToGoString(t lyricast.TypeExpr) string {
 			return "?"
 		}
 		ot := t.Data.(lyricast.OptionalType)
-		// T? in forge → *T in Go
+		// T? in lyric → *T in Go
 		return "*" + lyricTypeToGoString(ot.Inner)
+
+	case lyricast.TypeRef:
+		if t.Data == nil {
+			return "?"
+		}
+		rt := t.Data.(lyricast.RefType)
+		// ref T in lyric → *T in Go
+		return "*" + lyricTypeToGoString(rt.Inner)
 
 	case lyricast.TypeSequence:
 		if t.Data == nil {
