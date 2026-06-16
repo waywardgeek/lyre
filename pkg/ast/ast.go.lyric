@@ -1,0 +1,584 @@
+//go:build ignore
+
+//ldd:source ast.go, expr.go
+//ldd:why "AST node types for the Lyric syntax parser: positions, spans, declarations, statements, expressions, and type expressions. The two source files divide declarations/statements (ast.go) from expressions (expr.go)."
+
+package ast
+
+type Pos struct {
+	File string
+	Line int
+	Column int
+}
+
+type Span struct {
+	Start Pos
+	End Pos
+}
+
+type TypeExpr struct {
+	Kind TypeExprKind
+	Data any
+	Span Span
+}
+
+type NamedType struct {
+	Name string
+	Args []TypeExpr
+}
+
+type OptionalType struct {
+	Inner TypeExpr
+}
+
+type UnionType struct {
+	Variants []TypeExpr
+}
+
+type SequenceType struct {
+	Elem TypeExpr
+}
+
+type MapType struct {
+	Key TypeExpr
+	Value TypeExpr
+}
+
+type TupleField struct {
+	Name string
+	Type TypeExpr
+}
+
+type TupleType struct {
+	Fields []TupleField
+}
+
+type FuncType struct {
+	Params []TypeExpr
+	Return TypeExpr
+}
+
+type RefType struct {
+	Inner TypeExpr
+}
+
+type ChannelType struct {
+	Elem TypeExpr
+}
+
+type GeneratorType struct {
+	Elem TypeExpr
+}
+
+type TypeParam struct {
+	Name string
+	Constraint string
+	Span Span
+}
+
+type Param struct {
+	Name string
+	Type TypeExpr
+	IsMut bool
+	IsSelf bool
+	Span Span
+}
+
+type WhereClause struct {
+	Variable string
+	Constraint string
+	TypeArgs []TypeExpr
+	Span Span
+}
+
+type Annotations struct {
+	Why string
+	Concurrent *bool
+	RequiresLock []string
+	ExcludesLock []string
+	Raises []string
+	Requires []string
+	Ensures []string
+	Spawns bool
+	Pure bool
+}
+
+type FuncDecl struct {
+	Name string
+	IsPublic bool
+	ReceiverType string
+	TypeParams []TypeParam
+	Params []Param
+	ReturnType *TypeExpr
+	Where []WhereClause
+	Annotations Annotations
+	Body *Block
+	Span Span
+}
+
+type Field struct {
+	Name string
+	IsPublic bool
+	Type TypeExpr
+	Default *Expr
+	GuardedBy string
+	Why string
+	Span Span
+}
+
+type ClassDecl struct {
+	Name string
+	IsPublic bool
+	TypeParams []TypeParam
+	Where []WhereClause
+	Implements []string
+	Fields []Field
+	Methods []FuncDecl
+	Why string
+	Source []string
+	Span Span
+}
+
+type StructDecl struct {
+	Name string
+	IsPublic bool
+	TypeParams []TypeParam
+	Fields []Field
+	Why string
+	Span Span
+}
+
+type EnumVariant struct {
+	Name string
+	Fields []TupleField
+	Span Span
+}
+
+type EnumDecl struct {
+	Name string
+	IsPublic bool
+	TypeParams []TypeParam
+	Variants []EnumVariant
+	Why string
+	Span Span
+}
+
+type InterfaceFieldDecl struct {
+	TypeParam string
+	Name string
+	Type TypeExpr
+	Span Span
+}
+
+type InterfaceDecl struct {
+	Name string
+	IsPublic bool
+	TypeParams []TypeParam
+	Implements []string
+	Embeds []InterfaceEmbed
+	Methods []FuncDecl
+	Fields []InterfaceFieldDecl
+	Destructors []DestructorBlock
+	Why string
+	Span Span
+}
+
+type InterfaceEmbed struct {
+	Name string
+	TypeArgs []TypeExpr
+	Span Span
+}
+
+type DestructorBlock struct {
+	TypeParam string
+	Body Block
+	Span Span
+}
+
+type ImplMapping struct {
+	TypeParam string
+	MethodName string
+	Kind ImplMappingKind
+	TargetClass string
+	TargetMember string
+	InlineFunc *FuncDecl
+	Span Span
+}
+
+type ImplBlock struct {
+	InterfaceName string
+	ForType string
+	TypeArgs []TypeExpr
+	Label string
+	Mappings []ImplMapping
+	Span Span
+}
+
+type RelationSide struct {
+	TypeName string
+	TypeArgs []string
+	Label string
+}
+
+type RelationDecl struct {
+	Hint string
+	Parent RelationSide
+	Kind RelationKind
+	Child RelationSide
+	IsMany bool
+	Span Span
+}
+
+type DocBlock struct {
+	Section string
+	Content string
+	Span Span
+}
+
+type InvariantDecl struct {
+	Claim string
+	VerifiedAt string
+	Span Span
+}
+
+type ImportDecl struct {
+	Alias string
+	Path string
+	Span Span
+}
+
+type TypeAliasDecl struct {
+	Name string
+	IsPublic bool
+	Type TypeExpr
+	Span Span
+}
+
+type LyricBlock struct {
+	Name string
+	Why string
+	Imports []ImportDecl
+	Docs []DocBlock
+	Invariants []InvariantDecl
+	Structs []StructDecl
+	Enums []EnumDecl
+	Interfaces []InterfaceDecl
+	Classes []ClassDecl
+	Functions []FuncDecl
+	Relations []RelationDecl
+	ImplBlocks []ImplBlock
+	TypeAliases []TypeAliasDecl
+	Constants []ConstDecl
+	Source []string
+	Fake string
+	Span Span
+}
+
+type ConstDecl struct {
+	Name string
+	Type *TypeExpr
+	Value Expr
+	IsPublic bool
+	IsMut bool
+	Span Span
+}
+
+type Comment struct {
+	Text string
+	Pos Pos
+}
+
+type File struct {
+	Filename string
+	Blocks []LyricBlock
+	Comments []Comment
+	Span Span
+}
+
+func (f *File) DocComment(line int) []Comment
+
+type Expr struct {
+	Kind ExprKind
+	Data any
+	Span Span
+	ResolvedType any
+}
+
+type IdentExpr struct {
+	Name string
+}
+
+type IntLitExpr struct {
+	Value string
+	TypeHint string
+}
+
+type FloatLitExpr struct {
+	Value string
+}
+
+type StringLitExpr struct {
+	Value string
+}
+
+type StringInterpExpr struct {
+	Parts []Expr
+}
+
+type BoolLitExpr struct {
+	Value bool
+}
+
+type CallExpr struct {
+	Func Expr
+	TypeArgs []TypeExpr
+	InferredTypeArgs []any
+	Args []Expr
+	MutArgs []bool
+}
+
+type MethodCallExpr struct {
+	Receiver Expr
+	Method string
+	TypeArgs []TypeExpr
+	Args []Expr
+	MutArgs []bool
+}
+
+type FieldAccessExpr struct {
+	Receiver Expr
+	Field string
+}
+
+type IndexExpr struct {
+	Receiver Expr
+	Index Expr
+}
+
+type SliceExpr struct {
+	Receiver Expr
+	Low *Expr
+	High *Expr
+}
+
+type UnaryExpr struct {
+	Op UnaryOp
+	Operand Expr
+}
+
+type BinaryExpr struct {
+	Left Expr
+	Op BinaryOp
+	Right Expr
+}
+
+type TupleLitExpr struct {
+	Elems []Expr
+}
+
+type ListLitExpr struct {
+	Elems []Expr
+}
+
+type MapEntry struct {
+	Key Expr
+	Value Expr
+}
+
+type MapLitExpr struct {
+	Entries []MapEntry
+}
+
+type StructLitField struct {
+	Name string
+	Value Expr
+}
+
+type StructLitExpr struct {
+	TypeName string
+	TypeArgs []TypeExpr
+	Fields []StructLitField
+}
+
+type LambdaExpr struct {
+	Params []Param
+	ReturnType *TypeExpr
+	Body *Block
+}
+
+type CastExpr struct {
+	TargetType TypeExpr
+	Operand Expr
+}
+
+type UnwrapExpr struct {
+	Operand Expr
+}
+
+type TryExpr struct {
+	Operand Expr
+}
+
+type IsExpr struct {
+	Operand Expr
+	Variant string
+}
+
+type IfElseExpr struct {
+	Cond Expr
+	Then Block
+	Else Block
+	ElseIfs []ElseIfBranch
+}
+
+type ElseIfBranch struct {
+	Cond Expr
+	Body Block
+}
+
+type Stmt struct {
+	Kind StmtKind
+	Data any
+	Span Span
+}
+
+type Block struct {
+	Stmts []Stmt
+	Span Span
+}
+
+type VarDeclStmt struct {
+	Name string
+	Names []string
+	Type *TypeExpr
+	IsMut bool
+	Value *Expr
+	Pattern *Pattern
+	ElseBlock *Block
+}
+
+type AssignStmt struct {
+	Target Expr
+	Value Expr
+}
+
+type ReturnStmt struct {
+	Value *Expr
+}
+
+type ExprStmt struct {
+	Expr Expr
+}
+
+type IfStmt struct {
+	Condition Expr
+	Then Block
+	ElseIfs []ElseIf
+	Else *Block
+	LetPattern *Pattern
+	LetValue *Expr
+}
+
+type ElseIf struct {
+	Condition Expr
+	Body Block
+	Span Span
+}
+
+type ForStmt struct {
+	Var string
+	IndexVar string
+	Collection Expr
+	Body Block
+}
+
+type WhileStmt struct {
+	Condition Expr
+	Body Block
+}
+
+type MatchStmt struct {
+	Value Expr
+	Arms []MatchArm
+}
+
+type MatchArm struct {
+	Pattern Pattern
+	Patterns []Pattern
+	Guard *Expr
+	Body Block
+	Span Span
+}
+
+type SpawnStmt struct {
+	Body Block
+}
+
+type YieldStmt struct {
+	Value *Expr
+}
+
+type SelectStmt struct {
+	Cases []SelectCase
+}
+
+type SelectCase struct {
+	IsDefault bool
+	BindVar string
+	Expr *Expr
+	Body Block
+	Span Span
+}
+
+type LockStmt struct {
+	Mutex Expr
+	Body Block
+}
+
+type Pattern struct {
+	Kind PatternKind
+	Data any
+	Span Span
+	ResolvedType any
+}
+
+type IdentPattern struct {
+	Name string
+}
+
+type LiteralPattern struct {
+	Expr Expr
+}
+
+type VariantPattern struct {
+	Name string
+	Bindings []Pattern
+}
+
+type TuplePattern struct {
+	Elems []Pattern
+}
+
+type CascadeStmt struct {
+	Body Block
+}
+
+type TypeExprKind int
+
+type ImplMappingKind int
+
+type RelationKind int
+
+type ExprKind int
+
+type UnaryOp int
+
+type BinaryOp int
+
+type StmtKind int
+
+type PatternKind int
+
+// --- index ---
+// Auto-generated function/method index.
+// DO NOT EDIT below this line — regenerated by `lyre update`.

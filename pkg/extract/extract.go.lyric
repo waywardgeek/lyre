@@ -1,7 +1,7 @@
 //go:build ignore
 
 //ldd:source extract.go
-//ldd:why ""
+//ldd:why "Common IR shared by all language extractors: PackageInfo, StructInfo, InterfaceInfo, FuncInfo, ParamInfo, TypeDefInfo. Language-specific extractors populate this IR; verify/update/gen consume it."
 
 package extract
 
