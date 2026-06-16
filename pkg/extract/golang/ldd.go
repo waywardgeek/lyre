@@ -204,6 +204,218 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 	return outPath, b.String(), nil
 }
 
+// UpdateGoLDD refreshes a .go.lyric file by adding any exported symbols from
+// source that are not yet documented. Existing declarations are left unchanged
+// (they may have human-written doc comments). The // --- index --- section is
+// regenerated. Returns a summary of what was added.
+func UpdateGoLDD(lddPath string) (added []string, err error) {
+	src, err := os.ReadFile(lddPath)
+	if err != nil {
+		return nil, err
+	}
+	text := string(src)
+
+	// Parse declared API and metadata.
+	declared, meta, err := ParseLDDFile(lddPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing LDD file: %w", err)
+	}
+	if len(meta.Source) == 0 {
+		return nil, fmt.Errorf("no //ldd:source directive in %s", lddPath)
+	}
+
+	// Parse actual API from source files.
+	lddDir := filepath.Dir(lddPath)
+	actual := extract.NewPackageInfo("")
+	for _, srcFile := range meta.Source {
+		fullPath := filepath.Join(lddDir, srcFile)
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("source file %s not found: %w", srcFile, err)
+		}
+		var extracted *extract.PackageInfo
+		if info.IsDir() {
+			extracted, err = ExtractDir(fullPath)
+		} else {
+			extracted, err = ExtractFiles([]string{fullPath})
+		}
+		if err != nil {
+			return nil, fmt.Errorf("extracting %s: %w", srcFile, err)
+		}
+		mergePackageInfo(actual, extracted)
+	}
+
+	// Split the file at the index marker.
+	const indexMarker = "\n// --- index ---\n"
+	humanPart, _ := splitAtIndexMarker(text)
+
+	// Build new declarations for missing exports.
+	var newDecls strings.Builder
+
+	// Missing structs.
+	var missingStructNames []string
+	for name := range actual.Structs {
+		if IsExported(name) {
+			if _, ok := declared.Structs[name]; !ok {
+				if _, ok := declared.Interfaces[name]; !ok {
+					if _, ok := declared.TypeDefs[name]; !ok {
+						missingStructNames = append(missingStructNames, name)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(missingStructNames)
+	for _, name := range missingStructNames {
+		as := actual.Structs[name]
+		newDecls.WriteString(fmt.Sprintf("\ntype %s struct {\n", name))
+		var fieldNames []string
+		for fn := range as.Fields {
+			fieldNames = append(fieldNames, fn)
+		}
+		sort.Strings(fieldNames)
+		for _, fn := range fieldNames {
+			newDecls.WriteString(fmt.Sprintf("\t%s %s\n", fn, as.Fields[fn]))
+		}
+		newDecls.WriteString("}\n")
+		// Methods on this struct.
+		var methodNames []string
+		for mn := range as.Methods {
+			methodNames = append(methodNames, mn)
+		}
+		sort.Strings(methodNames)
+		for _, mn := range methodNames {
+			m := as.Methods[mn]
+			newDecls.WriteString(fmt.Sprintf("\n%s\n", buildFuncSig("(s *"+name+")", mn, m)))
+		}
+		added = append(added, "struct "+name)
+	}
+
+	// Missing interfaces.
+	var missingIfaceNames []string
+	for name := range actual.Interfaces {
+		if IsExported(name) {
+			if _, ok := declared.Interfaces[name]; !ok {
+				if _, ok := declared.Structs[name]; !ok {
+					missingIfaceNames = append(missingIfaceNames, name)
+				}
+			}
+		}
+	}
+	sort.Strings(missingIfaceNames)
+	for _, name := range missingIfaceNames {
+		ai := actual.Interfaces[name]
+		newDecls.WriteString(fmt.Sprintf("\ntype %s interface {\n", name))
+		var methodNames []string
+		for mn := range ai.Methods {
+			methodNames = append(methodNames, mn)
+		}
+		sort.Strings(methodNames)
+		for _, mn := range methodNames {
+			m := ai.Methods[mn]
+			newDecls.WriteString(fmt.Sprintf("\t%s\n", buildIfaceMethodSig(mn, m)))
+		}
+		newDecls.WriteString("}\n")
+		added = append(added, "interface "+name)
+	}
+
+	// Missing type defs.
+	var missingTypeNames []string
+	for name := range actual.TypeDefs {
+		if IsExported(name) {
+			if _, ok := declared.TypeDefs[name]; !ok {
+				if _, ok := declared.Structs[name]; !ok {
+					if _, ok := declared.Interfaces[name]; !ok {
+						missingTypeNames = append(missingTypeNames, name)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(missingTypeNames)
+	for _, name := range missingTypeNames {
+		td := actual.TypeDefs[name]
+		newDecls.WriteString(fmt.Sprintf("\ntype %s %s\n", name, td.Underlying))
+		added = append(added, "type "+name)
+	}
+
+	// Missing functions.
+	var missingFuncNames []string
+	for name := range actual.Functions {
+		if IsExported(name) {
+			if _, ok := declared.Functions[name]; !ok {
+				missingFuncNames = append(missingFuncNames, name)
+			}
+		}
+	}
+	sort.Strings(missingFuncNames)
+	for _, name := range missingFuncNames {
+		fi := actual.Functions[name]
+		newDecls.WriteString(fmt.Sprintf("\n%s\n", buildFuncSig("", name, fi)))
+		added = append(added, "func "+name)
+	}
+
+	// Reconstruct the file.
+	result := strings.TrimRight(humanPart, "\n")
+	if newDecls.Len() > 0 {
+		result += "\n" + newDecls.String()
+	}
+	result += indexMarker
+	result += "// Auto-generated function/method index.\n"
+	result += "// DO NOT EDIT below this line — regenerated by `lyre update`.\n"
+
+	return added, os.WriteFile(lddPath, []byte(result), 0644)
+}
+
+// splitAtIndexMarker splits the file content at "// --- index ---".
+// Returns the human section and the rest (which is discarded on update).
+func splitAtIndexMarker(text string) (human string, rest string) {
+	const marker = "\n// --- index ---\n"
+	if idx := strings.Index(text, marker); idx >= 0 {
+		return text[:idx], text[idx:]
+	}
+	return text, ""
+}
+
+// buildFuncSig builds a Go-syntax function signature from a FuncInfo.
+// recvClause should be "(r *RecvType)" or "" for standalone functions.
+func buildFuncSig(recvClause, name string, fi *extract.FuncInfo) string {
+	var b strings.Builder
+	b.WriteString("func ")
+	if recvClause != "" {
+		b.WriteString(recvClause)
+		b.WriteString(" ")
+	}
+	b.WriteString(name)
+	b.WriteString("(")
+	for i, p := range fi.Params {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if p.Name != "" {
+			b.WriteString(p.Name)
+			b.WriteString(" ")
+		}
+		b.WriteString(p.Type)
+	}
+	b.WriteString(")")
+	if len(fi.Returns) == 1 {
+		b.WriteString(" ")
+		b.WriteString(fi.Returns[0])
+	} else if len(fi.Returns) > 1 {
+		b.WriteString(" (")
+		b.WriteString(strings.Join(fi.Returns, ", "))
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
+// buildIfaceMethodSig builds an interface method signature (no "func" keyword).
+func buildIfaceMethodSig(name string, fi *extract.FuncInfo) string {
+	sig := buildFuncSig("", name, fi)
+	return strings.TrimPrefix(sig, "func ")
+}
+
 // Helper types for generation
 
 type structDecl struct {
