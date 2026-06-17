@@ -589,7 +589,10 @@ func UpdatePyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingStructNames)
 	for _, name := range missingStructNames {
 		as := actual.Structs[name]
-		newDecls.WriteString(fmt.Sprintf("\nclass %s:\n", name))
+		newDecls.WriteString("\n")
+		writePyDoc(&newDecls, as.Doc)
+		writePyLocation(&newDecls, as.File, as.Line)
+		newDecls.WriteString(fmt.Sprintf("class %s:\n", name))
 		fieldNames := sortedStringMapKeys(as.Fields)
 		for _, fn := range fieldNames {
 			newDecls.WriteString(fmt.Sprintf("    %s: %s\n", fn, as.Fields[fn]))
@@ -619,7 +622,10 @@ func UpdatePyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingIfaceNames)
 	for _, name := range missingIfaceNames {
 		ai := actual.Interfaces[name]
-		newDecls.WriteString(fmt.Sprintf("\nclass %s(Protocol):\n", name))
+		newDecls.WriteString("\n")
+		writePyDoc(&newDecls, ai.Doc)
+		writePyLocation(&newDecls, ai.File, ai.Line)
+		newDecls.WriteString(fmt.Sprintf("class %s(Protocol):\n", name))
 		methodNames := sortedMethodKeys(ai.Methods)
 		for _, mn := range methodNames {
 			newDecls.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", ai.Methods[mn])))
@@ -644,7 +650,9 @@ func UpdatePyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingTypeNames)
 	for _, name := range missingTypeNames {
 		td := actual.TypeDefs[name]
-		newDecls.WriteString(fmt.Sprintf("\n%s = %s\n", name, td.Underlying))
+		newDecls.WriteString("\n")
+		writePyLocation(&newDecls, td.File, td.Line)
+		newDecls.WriteString(fmt.Sprintf("%s = %s\n", name, td.Underlying))
 		added = append(added, "type "+name)
 	}
 
@@ -658,7 +666,10 @@ func UpdatePyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingFuncNames)
 	for _, name := range missingFuncNames {
 		fi := actual.Functions[name]
-		newDecls.WriteString(fmt.Sprintf("\n%s\n", buildPyFuncSig(name, "", fi)))
+		newDecls.WriteString("\n")
+		writePyDoc(&newDecls, fi.Doc)
+		writePyLocation(&newDecls, fi.File, fi.Line)
+		newDecls.WriteString(fmt.Sprintf("%s\n", buildPyFuncSig(name, "", fi)))
 		added = append(added, "func "+name)
 	}
 

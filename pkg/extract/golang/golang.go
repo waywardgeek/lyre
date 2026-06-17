@@ -20,7 +20,7 @@ func ExtractDir(dir string) (*extract.PackageInfo, error) {
 	pkgs, err := goparser.ParseDir(fset, dir, func(info os.FileInfo) bool {
 		name := info.Name()
 		return !strings.HasSuffix(name, "_test.go") && strings.HasSuffix(name, ".go")
-	}, 0)
+	}, goparser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func ExtractDir(dir string) (*extract.PackageInfo, error) {
 			info.Name = pkgName
 		}
 		for _, file := range pkg.Files {
-			extractFromFile(file, info)
+			extractFromFile(fset, file, info)
 		}
 	}
 	return info, nil
@@ -43,14 +43,14 @@ func ExtractFiles(paths []string) (*extract.PackageInfo, error) {
 	info := extract.NewPackageInfo("")
 
 	for _, path := range paths {
-		file, err := goparser.ParseFile(fset, path, nil, 0)
+		file, err := goparser.ParseFile(fset, path, nil, goparser.ParseComments)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
 		if info.Name == "" {
 			info.Name = file.Name.Name
 		}
-		extractFromFile(file, info)
+		extractFromFile(fset, file, info)
 	}
 	return info, nil
 }
@@ -59,24 +59,29 @@ func ExtractFiles(paths []string) (*extract.PackageInfo, error) {
 // This is used for parsing .go.lyric understanding files.
 func ExtractSource(src string, filename string) (*extract.PackageInfo, error) {
 	fset := token.NewFileSet()
-	file, err := goparser.ParseFile(fset, filename, src, 0)
+	file, err := goparser.ParseFile(fset, filename, src, goparser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
 	info := extract.NewPackageInfo(file.Name.Name)
-	extractFromFile(file, info)
+	extractFromFile(fset, file, info)
 	return info, nil
 }
 
-func extractFromFile(file *ast.File, info *extract.PackageInfo) {
+func extractFromFile(fset *token.FileSet, file *ast.File, info *extract.PackageInfo) {
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
 				if ts, ok := spec.(*ast.TypeSpec); ok {
+					doc := docText(ts.Doc, d.Doc)
+					pos := fset.Position(ts.Pos())
 					switch t := ts.Type.(type) {
 					case *ast.StructType:
 						si := extract.NewStructInfo()
+						si.Doc = doc
+						si.File = filepath.Base(pos.Filename)
+						si.Line = pos.Line
 						if t.Fields != nil {
 							for _, f := range t.Fields.List {
 								typStr := TypeString(f.Type)
@@ -89,6 +94,9 @@ func extractFromFile(file *ast.File, info *extract.PackageInfo) {
 
 					case *ast.InterfaceType:
 						ii := extract.NewInterfaceInfo()
+						ii.Doc = doc
+						ii.File = filepath.Base(pos.Filename)
+						ii.Line = pos.Line
 						if t.Methods != nil {
 							for _, m := range t.Methods.List {
 								if ft, ok := m.Type.(*ast.FuncType); ok {
@@ -103,13 +111,16 @@ func extractFromFile(file *ast.File, info *extract.PackageInfo) {
 					default:
 						info.TypeDefs[ts.Name.Name] = &extract.TypeDefInfo{
 							Underlying: TypeString(ts.Type),
+							Doc:        doc,
+							File:       filepath.Base(pos.Filename),
+							Line:       pos.Line,
 						}
 					}
 				}
 			}
 
 		case *ast.FuncDecl:
-			fi := extractFuncInfo(d)
+			fi := extractFuncInfo(fset, d)
 			if d.Recv != nil && len(d.Recv.List) > 0 {
 				recvType := receiverTypeName(d.Recv.List[0].Type)
 				if recvType != "" {
@@ -127,8 +138,13 @@ func extractFromFile(file *ast.File, info *extract.PackageInfo) {
 	}
 }
 
-func extractFuncInfo(d *ast.FuncDecl) *extract.FuncInfo {
-	return extractFuncType(d.Type)
+func extractFuncInfo(fset *token.FileSet, d *ast.FuncDecl) *extract.FuncInfo {
+	fi := extractFuncType(d.Type)
+	fi.Doc = docText(d.Doc, nil)
+	pos := fset.Position(d.Pos())
+	fi.File = filepath.Base(pos.Filename)
+	fi.Line = pos.Line
+	return fi
 }
 
 func extractFuncType(ft *ast.FuncType) *extract.FuncInfo {

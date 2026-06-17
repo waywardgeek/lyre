@@ -591,13 +591,21 @@ func UpdateLyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingStructNames)
 	for _, name := range missingStructNames {
 		si := actual.Structs[name]
-		newDecls.WriteString(fmt.Sprintf("\nstruct %s {\n", name))
+		keyword := "struct"
+		if si.IsClass {
+			keyword = "class"
+		}
+		newDecls.WriteString("\n")
+		writeLyLocation(&newDecls, si.File, si.Line)
+		newDecls.WriteString(fmt.Sprintf("%s %s {\n", keyword, name))
 		for _, fn := range sortedStringMapKeys(si.Fields) {
 			newDecls.WriteString(fmt.Sprintf("  %s: %s\n", fn, si.Fields[fn]))
 		}
 		newDecls.WriteString("}\n")
 		for _, mn := range sortedMethodKeys(si.Methods) {
-			newDecls.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(fmt.Sprintf("%s.%s", name, mn), true, si.Methods[mn])))
+			mf := si.Methods[mn]
+			writeLyLocation(&newDecls, mf.File, mf.Line)
+			newDecls.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(fmt.Sprintf("%s.%s", name, mn), true, mf)))
 		}
 		added = append(added, name)
 	}
@@ -612,7 +620,9 @@ func UpdateLyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingIfaceNames)
 	for _, name := range missingIfaceNames {
 		ii := actual.Interfaces[name]
-		newDecls.WriteString(fmt.Sprintf("\ninterface %s {\n", name))
+		newDecls.WriteString("\n")
+		writeLyLocation(&newDecls, ii.File, ii.Line)
+		newDecls.WriteString(fmt.Sprintf("interface %s {\n", name))
 		for _, mn := range sortedMethodKeys(ii.Methods) {
 			newDecls.WriteString(fmt.Sprintf("  %s\n", buildLyFuncSig(mn, true, ii.Methods[mn])))
 		}
@@ -630,7 +640,9 @@ func UpdateLyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingFuncNames)
 	for _, name := range missingFuncNames {
 		fi := actual.Functions[name]
-		newDecls.WriteString(fmt.Sprintf("\n%s\n", buildLyFuncSig(name, false, fi)))
+		newDecls.WriteString("\n")
+		writeLyLocation(&newDecls, fi.File, fi.Line)
+		newDecls.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(name, false, fi)))
 		added = append(added, name)
 	}
 
@@ -644,7 +656,9 @@ func UpdateLyLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingTypeDefNames)
 	for _, name := range missingTypeDefNames {
 		td := actual.TypeDefs[name]
-		newDecls.WriteString(fmt.Sprintf("\n// %s = %s\n", name, td.Underlying))
+		newDecls.WriteString("\n")
+		writeLyLocation(&newDecls, td.File, td.Line)
+		newDecls.WriteString(fmt.Sprintf("// %s = %s\n", name, td.Underlying))
 		added = append(added, name)
 	}
 

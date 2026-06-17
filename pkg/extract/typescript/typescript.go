@@ -553,7 +553,10 @@ func UpdateTsLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingIfaceNames)
 	for _, name := range missingIfaceNames {
 		iface := actual.Interfaces[name]
-		newDecls.WriteString(fmt.Sprintf("\ninterface %s {\n", name))
+		newDecls.WriteString("\n")
+		writeTsDoc(&newDecls, iface.Doc)
+		writeTsLocation(&newDecls, iface.File, iface.Line)
+		newDecls.WriteString(fmt.Sprintf("interface %s {\n", name))
 		for _, mn := range sortedFuncKeys(iface.Methods) {
 			mf := iface.Methods[mn]
 			newDecls.WriteString(fmt.Sprintf("  %s;\n", buildTsFuncSig(mn, "", mf)))
@@ -572,7 +575,10 @@ func UpdateTsLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingClassNames)
 	for _, name := range missingClassNames {
 		cls := actual.Structs[name]
-		newDecls.WriteString(fmt.Sprintf("\nclass %s {\n", name))
+		newDecls.WriteString("\n")
+		writeTsDoc(&newDecls, cls.Doc)
+		writeTsLocation(&newDecls, cls.File, cls.Line)
+		newDecls.WriteString(fmt.Sprintf("class %s {\n", name))
 		for _, fn := range sortedStringMapKeys(cls.Fields) {
 			newDecls.WriteString(fmt.Sprintf("  %s: %s;\n", fn, cls.Fields[fn]))
 		}
@@ -598,7 +604,10 @@ func UpdateTsLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingTypeNames)
 	for _, name := range missingTypeNames {
 		td := actual.TypeDefs[name]
-		newDecls.WriteString(fmt.Sprintf("\ntype %s = %s;\n", name, td.Underlying))
+		newDecls.WriteString("\n")
+		writeTsDoc(&newDecls, td.Doc)
+		writeTsLocation(&newDecls, td.File, td.Line)
+		newDecls.WriteString(fmt.Sprintf("type %s = %s;\n", name, td.Underlying))
 		added = append(added, "type "+name)
 	}
 
@@ -612,7 +621,10 @@ func UpdateTsLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingFuncNames)
 	for _, name := range missingFuncNames {
 		fi := actual.Functions[name]
-		newDecls.WriteString(fmt.Sprintf("\nfunction %s;\n", buildTsFuncSig(name, "", fi)))
+		newDecls.WriteString("\n")
+		writeTsDoc(&newDecls, fi.Doc)
+		writeTsLocation(&newDecls, fi.File, fi.Line)
+		newDecls.WriteString(fmt.Sprintf("function %s;\n", buildTsFuncSig(name, "", fi)))
 		added = append(added, "func "+name)
 	}
 

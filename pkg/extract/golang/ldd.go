@@ -302,7 +302,10 @@ func UpdateGoLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingStructNames)
 	for _, name := range missingStructNames {
 		as := actual.Structs[name]
-		newDecls.WriteString(fmt.Sprintf("\ntype %s struct {\n", name))
+		newDecls.WriteString("\n")
+		writeDoc(&newDecls, as.Doc)
+		writeLocation(&newDecls, as.File, as.Line)
+		newDecls.WriteString(fmt.Sprintf("type %s struct {\n", name))
 		var fieldNames []string
 		for fn := range as.Fields {
 			fieldNames = append(fieldNames, fn)
@@ -320,7 +323,10 @@ func UpdateGoLDD(lddPath string) (added []string, err error) {
 		sort.Strings(methodNames)
 		for _, mn := range methodNames {
 			m := as.Methods[mn]
-			newDecls.WriteString(fmt.Sprintf("\n%s\n", buildFuncSig("(s *"+name+")", mn, m)))
+			newDecls.WriteString("\n")
+			writeDoc(&newDecls, m.Doc)
+			writeLocation(&newDecls, m.File, m.Line)
+			newDecls.WriteString(fmt.Sprintf("%s\n", buildFuncSig("(s *"+name+")", mn, m)))
 		}
 		added = append(added, "struct "+name)
 	}
@@ -339,7 +345,10 @@ func UpdateGoLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingIfaceNames)
 	for _, name := range missingIfaceNames {
 		ai := actual.Interfaces[name]
-		newDecls.WriteString(fmt.Sprintf("\ntype %s interface {\n", name))
+		newDecls.WriteString("\n")
+		writeDoc(&newDecls, ai.Doc)
+		writeLocation(&newDecls, ai.File, ai.Line)
+		newDecls.WriteString(fmt.Sprintf("type %s interface {\n", name))
 		var methodNames []string
 		for mn := range ai.Methods {
 			methodNames = append(methodNames, mn)
@@ -369,7 +378,10 @@ func UpdateGoLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingTypeNames)
 	for _, name := range missingTypeNames {
 		td := actual.TypeDefs[name]
-		newDecls.WriteString(fmt.Sprintf("\ntype %s %s\n", name, td.Underlying))
+		newDecls.WriteString("\n")
+		writeDoc(&newDecls, td.Doc)
+		writeLocation(&newDecls, td.File, td.Line)
+		newDecls.WriteString(fmt.Sprintf("type %s %s\n", name, td.Underlying))
 		added = append(added, "type "+name)
 	}
 
@@ -385,7 +397,10 @@ func UpdateGoLDD(lddPath string) (added []string, err error) {
 	sort.Strings(missingFuncNames)
 	for _, name := range missingFuncNames {
 		fi := actual.Functions[name]
-		newDecls.WriteString(fmt.Sprintf("\n%s\n", buildFuncSig("", name, fi)))
+		newDecls.WriteString("\n")
+		writeDoc(&newDecls, fi.Doc)
+		writeLocation(&newDecls, fi.File, fi.Line)
+		newDecls.WriteString(fmt.Sprintf("%s\n", buildFuncSig("", name, fi)))
 		added = append(added, "func "+name)
 	}
 
