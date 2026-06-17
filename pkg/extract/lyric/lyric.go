@@ -65,27 +65,40 @@ type lyPackageJSON struct {
 	Structs    map[string]lyStructJSON   `json:"structs"`
 	Interfaces map[string]lyIfaceJSON    `json:"interfaces"`
 	Functions  map[string]lyFuncJSON     `json:"functions"`
-	TypeDefs   map[string]string         `json:"typedefs"`
+	TypeDefs   map[string]lyTypeDefJSON  `json:"typedefs"`
 }
 
 type lyStructJSON struct {
 	Fields  map[string]string        `json:"fields"`
 	Methods map[string]lyFuncJSON    `json:"methods"`
+	File    string                   `json:"file"`
+	Line    int                      `json:"line"`
+	IsClass bool                     `json:"is_class"`
 }
 
 type lyIfaceJSON struct {
 	Methods map[string]lyFuncJSON `json:"methods"`
+	File    string                `json:"file"`
+	Line    int                   `json:"line"`
 }
 
 type lyFuncJSON struct {
 	Params  []lyParamJSON `json:"params"`
 	Returns []string      `json:"returns"`
+	File    string        `json:"file"`
+	Line    int           `json:"line"`
 }
 
 type lyParamJSON struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 	Mut  bool   `json:"mut,omitempty"`
+}
+
+type lyTypeDefJSON struct {
+	Underlying string `json:"underlying"`
+	File       string `json:"file"`
+	Line       int    `json:"line"`
 }
 
 // --- Binary location ---
@@ -153,6 +166,9 @@ func convertPackageJSON(raw *lyPackageJSON) *extract.PackageInfo {
 
 	for name, s := range raw.Structs {
 		si := extract.NewStructInfo()
+		si.File = filepath.Base(s.File)
+		si.Line = s.Line
+		si.IsClass = s.IsClass
 		for fn, ft := range s.Fields {
 			si.Fields[fn] = ft
 		}
@@ -164,6 +180,8 @@ func convertPackageJSON(raw *lyPackageJSON) *extract.PackageInfo {
 
 	for name, iface := range raw.Interfaces {
 		ii := extract.NewInterfaceInfo()
+		ii.File = filepath.Base(iface.File)
+		ii.Line = iface.Line
 		for mn, mf := range iface.Methods {
 			ii.Methods[mn] = convertFuncJSON(mf)
 		}
@@ -174,15 +192,19 @@ func convertPackageJSON(raw *lyPackageJSON) *extract.PackageInfo {
 		info.Functions[name] = convertFuncJSON(fn)
 	}
 
-	for name, underlying := range raw.TypeDefs {
-		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: underlying}
+	for name, td := range raw.TypeDefs {
+		info.TypeDefs[name] = &extract.TypeDefInfo{
+			Underlying: td.Underlying,
+			File:       filepath.Base(td.File),
+			Line:       td.Line,
+		}
 	}
 
 	return info
 }
 
 func convertFuncJSON(fn lyFuncJSON) *extract.FuncInfo {
-	fi := &extract.FuncInfo{}
+	fi := &extract.FuncInfo{File: filepath.Base(fn.File), Line: fn.Line}
 	for _, p := range fn.Params {
 		fi.Params = append(fi.Params, extract.ParamInfo{Name: p.Name, Type: p.Type, IsMut: p.Mut})
 	}
@@ -259,6 +281,13 @@ func ScanLyricFiles(absDir string) ([]string, error) {
 }
 
 // --- Generate LDD file ---
+
+// writeLyLocation emits a file:line reference comment.
+func writeLyLocation(b *strings.Builder, file string, line int) {
+	if file != "" && line > 0 {
+		b.WriteString(fmt.Sprintf("// %s:%d\n", file, line))
+	}
+}
 
 // buildLyFuncSig builds a Lyric-syntax function signature.
 func buildLyFuncSig(name string, hasSelf bool, fi *extract.FuncInfo) string {
@@ -347,13 +376,19 @@ func GenerateLyLDDFile(pkgDir string) (outPath, content string, err error) {
 	// Enums (typedefs)
 	for _, name := range typeDefNames {
 		td := merged.TypeDefs[name]
+		writeLyLocation(&b, td.File, td.Line)
 		b.WriteString(fmt.Sprintf("// %s = %s\n\n", name, td.Underlying))
 	}
 
 	// Structs and classes
 	for _, name := range structNames {
 		si := merged.Structs[name]
-		b.WriteString(fmt.Sprintf("struct %s {\n", name))
+		writeLyLocation(&b, si.File, si.Line)
+		keyword := "struct"
+		if si.IsClass {
+			keyword = "class"
+		}
+		b.WriteString(fmt.Sprintf("%s %s {\n", keyword, name))
 		fieldNames := sortedStringMapKeys(si.Fields)
 		for _, fn := range fieldNames {
 			b.WriteString(fmt.Sprintf("  %s: %s\n", fn, si.Fields[fn]))
@@ -362,7 +397,9 @@ func GenerateLyLDDFile(pkgDir string) (outPath, content string, err error) {
 
 		methodNames := sortedMethodKeys(si.Methods)
 		for _, mn := range methodNames {
-			b.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(fmt.Sprintf("%s.%s", name, mn), true, si.Methods[mn])))
+			mf := si.Methods[mn]
+			writeLyLocation(&b, mf.File, mf.Line)
+			b.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(fmt.Sprintf("%s.%s", name, mn), true, mf)))
 		}
 		b.WriteString("\n")
 	}
@@ -370,6 +407,7 @@ func GenerateLyLDDFile(pkgDir string) (outPath, content string, err error) {
 	// Interfaces
 	for _, name := range ifaceNames {
 		ii := merged.Interfaces[name]
+		writeLyLocation(&b, ii.File, ii.Line)
 		b.WriteString(fmt.Sprintf("interface %s {\n", name))
 		methodNames := sortedMethodKeys(ii.Methods)
 		for _, mn := range methodNames {
@@ -381,6 +419,7 @@ func GenerateLyLDDFile(pkgDir string) (outPath, content string, err error) {
 	// Free functions
 	for _, name := range funcNames {
 		fi := merged.Functions[name]
+		writeLyLocation(&b, fi.File, fi.Line)
 		b.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(name, false, fi)))
 	}
 

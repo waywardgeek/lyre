@@ -19,6 +19,7 @@ type StructInfo struct {
 	Doc     string // leading doc comment, if any
 	File    string // source file name (basename)
 	Line    int    // line number in source file
+	IsClass bool   // true if this is a class (reference type), false for struct (value type)
 }
 
 // InterfaceInfo describes an interface with methods.
