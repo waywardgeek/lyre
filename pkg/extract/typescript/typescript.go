@@ -62,27 +62,43 @@ type tsPackageJSON struct {
 	Structs    map[string]tsClassJSON    `json:"structs"`
 	Interfaces map[string]tsIfaceJSON    `json:"interfaces"`
 	Functions  map[string]tsFuncJSON     `json:"functions"`
-	TypeDefs   map[string]json.RawMessage `json:"typedefs"`
+	TypeDefs   map[string]tsTypeDefJSON  `json:"typedefs"`
 }
 
 type tsClassJSON struct {
 	Fields  map[string]string         `json:"fields"`
 	Methods map[string]tsFuncJSON     `json:"methods"`
+	Doc     string                    `json:"doc"`
+	File    string                    `json:"file"`
+	Line    int                       `json:"line"`
 }
 
 type tsIfaceJSON struct {
 	Fields  map[string]string         `json:"fields"`
 	Methods map[string]tsFuncJSON     `json:"methods"`
+	Doc     string                    `json:"doc"`
+	File    string                    `json:"file"`
+	Line    int                       `json:"line"`
 }
 
 type tsFuncJSON struct {
 	Params  []tsParamJSON `json:"params"`
 	Returns []string      `json:"returns"`
+	Doc     string        `json:"doc"`
+	File    string        `json:"file"`
+	Line    int           `json:"line"`
 }
 
 type tsParamJSON struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+type tsTypeDefJSON struct {
+	Underlying string `json:"underlying"`
+	Doc        string `json:"doc"`
+	File       string `json:"file"`
+	Line       int    `json:"line"`
 }
 
 // --- Script execution ---
@@ -121,6 +137,9 @@ func convertPackageJSON(raw *tsPackageJSON) *extract.PackageInfo {
 
 	for name, s := range raw.Structs {
 		si := extract.NewStructInfo()
+		si.Doc = s.Doc
+		si.File = s.File
+		si.Line = s.Line
 		for fn, ft := range s.Fields {
 			si.Fields[fn] = ft
 		}
@@ -132,8 +151,10 @@ func convertPackageJSON(raw *tsPackageJSON) *extract.PackageInfo {
 
 	for name, iface := range raw.Interfaces {
 		ii := extract.NewInterfaceInfo()
+		ii.Doc = iface.Doc
+		ii.File = iface.File
+		ii.Line = iface.Line
 		for fn, ft := range iface.Fields {
-			// Interface fields → treated as fields in a struct-like container
 			ii.Methods[fn] = &extract.FuncInfo{
 				Params:  nil,
 				Returns: []string{ft},
@@ -149,13 +170,8 @@ func convertPackageJSON(raw *tsPackageJSON) *extract.PackageInfo {
 		info.Functions[name] = convertFuncJSON(fn)
 	}
 
-	for name, rawVal := range raw.TypeDefs {
-		// TypeDefs come as either a string or a complex type
-		var s string
-		if err := json.Unmarshal(rawVal, &s); err != nil {
-			s = string(rawVal)
-		}
-		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: s}
+	for name, td := range raw.TypeDefs {
+		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: td.Underlying, Doc: td.Doc, File: td.File, Line: td.Line}
 	}
 
 	return info
@@ -170,7 +186,7 @@ func convertFuncJSON(f tsFuncJSON) *extract.FuncInfo {
 	if returns == nil {
 		returns = []string{"void"}
 	}
-	return &extract.FuncInfo{Params: params, Returns: returns}
+	return &extract.FuncInfo{Params: params, Returns: returns, Doc: f.Doc, File: f.File, Line: f.Line}
 }
 
 // --- LDD Metadata ---
@@ -262,6 +278,8 @@ func renderTsLDD(info *extract.PackageInfo, sourceFiles []string) string {
 	// Interfaces
 	for _, name := range sortedInterfaceKeys(info.Interfaces) {
 		iface := info.Interfaces[name]
+		writeTsDoc(&b, iface.Doc)
+		writeTsLocation(&b, iface.File, iface.Line)
 		b.WriteString(fmt.Sprintf("interface %s {\n", name))
 		for _, mn := range sortedFuncKeys(iface.Methods) {
 			mf := iface.Methods[mn]
@@ -273,6 +291,8 @@ func renderTsLDD(info *extract.PackageInfo, sourceFiles []string) string {
 	// Classes
 	for _, name := range sortedKeys(info.Structs) {
 		cls := info.Structs[name]
+		writeTsDoc(&b, cls.Doc)
+		writeTsLocation(&b, cls.File, cls.Line)
 		b.WriteString(fmt.Sprintf("class %s {\n", name))
 		for _, fn := range sortedStringMapKeys(cls.Fields) {
 			b.WriteString(fmt.Sprintf("  %s: %s;\n", fn, cls.Fields[fn]))
@@ -287,6 +307,8 @@ func renderTsLDD(info *extract.PackageInfo, sourceFiles []string) string {
 	// Type aliases
 	for _, name := range sortedTypeDefKeys(info.TypeDefs) {
 		td := info.TypeDefs[name]
+		writeTsDoc(&b, td.Doc)
+		writeTsLocation(&b, td.File, td.Line)
 		b.WriteString(fmt.Sprintf("type %s = %s;\n", name, td.Underlying))
 	}
 	if len(info.TypeDefs) > 0 {
@@ -296,6 +318,8 @@ func renderTsLDD(info *extract.PackageInfo, sourceFiles []string) string {
 	// Functions
 	for _, name := range sortedFuncKeys(info.Functions) {
 		fn := info.Functions[name]
+		writeTsDoc(&b, fn.Doc)
+		writeTsLocation(&b, fn.File, fn.Line)
 		b.WriteString(fmt.Sprintf("function %s;\n", buildTsFuncSig(name, "", fn)))
 	}
 
@@ -316,6 +340,22 @@ func buildTsFuncSig(name string, _ string, fi *extract.FuncInfo) string {
 		ret = fi.Returns[0]
 	}
 	return fmt.Sprintf("%s(%s): %s", name, strings.Join(parts, ", "), ret)
+}
+
+// writeTsDoc emits a doc comment using // prefix (first line only for brevity).
+func writeTsDoc(b *strings.Builder, doc string) {
+	if doc == "" {
+		return
+	}
+	first := strings.SplitN(doc, "\n", 2)[0]
+	b.WriteString("// " + first + "\n")
+}
+
+// writeTsLocation emits a file:line reference comment.
+func writeTsLocation(b *strings.Builder, file string, line int) {
+	if file != "" && line > 0 {
+		b.WriteString(fmt.Sprintf("// %s:%d\n", file, line))
+	}
 }
 
 // --- Parsing ---

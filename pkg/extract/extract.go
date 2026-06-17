@@ -16,17 +16,26 @@ type PackageInfo struct {
 type StructInfo struct {
 	Fields  map[string]string          // field name → type string (in source language syntax)
 	Methods map[string]*FuncInfo
+	Doc     string // leading doc comment, if any
+	File    string // source file name (basename)
+	Line    int    // line number in source file
 }
 
 // InterfaceInfo describes an interface with methods.
 type InterfaceInfo struct {
 	Methods map[string]*FuncInfo
+	Doc     string
+	File    string
+	Line    int
 }
 
 // FuncInfo describes a function or method signature.
 type FuncInfo struct {
 	Params  []ParamInfo
 	Returns []string // type strings in source language syntax
+	Doc     string
+	File    string
+	Line    int
 }
 
 // ParamInfo describes a function parameter.
@@ -39,6 +48,9 @@ type ParamInfo struct {
 // TypeDefInfo describes a type alias or newtype.
 type TypeDefInfo struct {
 	Underlying string // the underlying type string, if simple
+	Doc        string
+	File       string
+	Line       int
 }
 
 // LDDMeta holds the LDD-specific metadata parsed from structured comments.

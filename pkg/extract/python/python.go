@@ -91,26 +91,41 @@ type pyPackageJSON struct {
 	Structs    map[string]pyStructJSON   `json:"structs"`
 	Interfaces map[string]pyIfaceJSON    `json:"interfaces"`
 	Functions  map[string]pyFuncJSON     `json:"functions"`
-	TypeDefs   map[string]string         `json:"typedefs"`
+	TypeDefs   map[string]pyTypeDefJSON  `json:"typedefs"`
 }
 
 type pyStructJSON struct {
 	Fields  map[string]string         `json:"fields"`
 	Methods map[string]pyFuncJSON     `json:"methods"`
+	Doc     string                    `json:"doc"`
+	File    string                    `json:"file"`
+	Line    int                       `json:"line"`
 }
 
 type pyIfaceJSON struct {
 	Methods map[string]pyFuncJSON `json:"methods"`
+	Doc     string                `json:"doc"`
+	File    string                `json:"file"`
+	Line    int                   `json:"line"`
 }
 
 type pyFuncJSON struct {
 	Params  []pyParamJSON `json:"params"`
 	Returns []string      `json:"returns"`
+	Doc     string        `json:"doc"`
+	File    string        `json:"file"`
+	Line    int           `json:"line"`
 }
 
 type pyParamJSON struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+type pyTypeDefJSON struct {
+	Underlying string `json:"underlying"`
+	File       string `json:"file"`
+	Line       int    `json:"line"`
 }
 
 // --- Script execution ---
@@ -153,6 +168,9 @@ func convertPackageJSON(raw *pyPackageJSON) *extract.PackageInfo {
 
 	for name, s := range raw.Structs {
 		si := extract.NewStructInfo()
+		si.Doc = s.Doc
+		si.File = s.File
+		si.Line = s.Line
 		for fn, ft := range s.Fields {
 			si.Fields[fn] = ft
 		}
@@ -164,6 +182,9 @@ func convertPackageJSON(raw *pyPackageJSON) *extract.PackageInfo {
 
 	for name, iface := range raw.Interfaces {
 		ii := extract.NewInterfaceInfo()
+		ii.Doc = iface.Doc
+		ii.File = iface.File
+		ii.Line = iface.Line
 		for mn, mf := range iface.Methods {
 			ii.Methods[mn] = convertFuncJSON(mf)
 		}
@@ -174,15 +195,15 @@ func convertPackageJSON(raw *pyPackageJSON) *extract.PackageInfo {
 		info.Functions[name] = convertFuncJSON(fn)
 	}
 
-	for name, underlying := range raw.TypeDefs {
-		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: underlying}
+	for name, td := range raw.TypeDefs {
+		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: td.Underlying, File: td.File, Line: td.Line}
 	}
 
 	return info
 }
 
 func convertFuncJSON(fn pyFuncJSON) *extract.FuncInfo {
-	fi := &extract.FuncInfo{}
+	fi := &extract.FuncInfo{Doc: fn.Doc, File: fn.File, Line: fn.Line}
 	for _, p := range fn.Params {
 		fi.Params = append(fi.Params, extract.ParamInfo{Name: p.Name, Type: p.Type})
 	}
@@ -338,7 +359,10 @@ func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
 
 	for _, name := range structNames {
 		si := merged.Structs[name]
-		b.WriteString(fmt.Sprintf("\nclass %s:\n", name))
+		b.WriteString("\n")
+		writePyDoc(&b, si.Doc)
+		writePyLocation(&b, si.File, si.Line)
+		b.WriteString(fmt.Sprintf("class %s:\n", name))
 		fieldNames := sortedStringMapKeys(si.Fields)
 		for _, fn := range fieldNames {
 			b.WriteString(fmt.Sprintf("    %s: %s\n", fn, si.Fields[fn]))
@@ -348,7 +372,10 @@ func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
 			b.WriteString("\n")
 		}
 		for _, mn := range methodNames {
-			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", si.Methods[mn])))
+			mf := si.Methods[mn]
+			writePyDoc(&b, mf.Doc)
+			writePyLocation(&b, mf.File, mf.Line)
+			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", mf)))
 		}
 		if len(fieldNames) == 0 && len(methodNames) == 0 {
 			b.WriteString("    ...\n")
@@ -357,10 +384,16 @@ func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
 
 	for _, name := range ifaceNames {
 		ii := merged.Interfaces[name]
-		b.WriteString(fmt.Sprintf("\nclass %s(Protocol):\n", name))
+		b.WriteString("\n")
+		writePyDoc(&b, ii.Doc)
+		writePyLocation(&b, ii.File, ii.Line)
+		b.WriteString(fmt.Sprintf("class %s(Protocol):\n", name))
 		methodNames := sortedMethodKeys(ii.Methods)
 		for _, mn := range methodNames {
-			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", ii.Methods[mn])))
+			mf := ii.Methods[mn]
+			writePyDoc(&b, mf.Doc)
+			writePyLocation(&b, mf.File, mf.Line)
+			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", mf)))
 		}
 		if len(methodNames) == 0 {
 			b.WriteString("    ...\n")
@@ -369,12 +402,17 @@ func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
 
 	for _, name := range typeDefNames {
 		td := merged.TypeDefs[name]
-		b.WriteString(fmt.Sprintf("\n%s = %s\n", name, td.Underlying))
+		b.WriteString("\n")
+		writePyLocation(&b, td.File, td.Line)
+		b.WriteString(fmt.Sprintf("%s = %s\n", name, td.Underlying))
 	}
 
 	for _, name := range funcNames {
 		fi := merged.Functions[name]
-		b.WriteString(fmt.Sprintf("\n%s\n", buildPyFuncSig(name, "", fi)))
+		b.WriteString("\n")
+		writePyDoc(&b, fi.Doc)
+		writePyLocation(&b, fi.File, fi.Line)
+		b.WriteString(fmt.Sprintf("%s\n", buildPyFuncSig(name, "", fi)))
 	}
 
 	b.WriteString("\n# --- index ---\n")
@@ -643,6 +681,25 @@ func splitAtIndexMarkerPy(text string) (human string, rest string) {
 		return text[:idx], text[idx:]
 	}
 	return text, ""
+}
+
+// --- Rendering helpers ---
+
+// writePyDoc emits a doc comment block using # prefix.
+func writePyDoc(b *strings.Builder, doc string) {
+	if doc == "" {
+		return
+	}
+	// Use only the first line for brevity
+	first := strings.SplitN(doc, "\n", 2)[0]
+	b.WriteString("# " + first + "\n")
+}
+
+// writePyLocation emits a file:line reference comment.
+func writePyLocation(b *strings.Builder, file string, line int) {
+	if file != "" && line > 0 {
+		b.WriteString(fmt.Sprintf("# %s:%d\n", file, line))
+	}
 }
 
 // --- Merge helper ---

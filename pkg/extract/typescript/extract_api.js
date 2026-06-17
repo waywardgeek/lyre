@@ -53,6 +53,38 @@ function typeToString(checker, type) {
   );
 }
 
+function getSourceFile(node) {
+  while (node && !ts.isSourceFile(node)) node = node.parent;
+  return node;
+}
+
+function nodeLocation(node) {
+  const sf = getSourceFile(node);
+  if (!sf) return { file: "", line: 0 };
+  const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
+  return { file: path.basename(sf.fileName), line: line + 1 };
+}
+
+function getJSDoc(node) {
+  // Get leading comment text (JSDoc or //)
+  const sf = getSourceFile(node);
+  if (!sf) return "";
+  const fullText = sf.getFullText();
+  const ranges = ts.getLeadingCommentRanges(fullText, node.getFullStart());
+  if (!ranges || ranges.length === 0) return "";
+  // Use the last comment block before the node
+  const last = ranges[ranges.length - 1];
+  let text = fullText.substring(last.pos, last.end);
+  // Clean JSDoc: strip /** */ and leading *
+  if (text.startsWith("/**")) {
+    text = text.replace(/^\/\*\*\s*/, "").replace(/\s*\*\/\s*$/, "");
+    text = text.replace(/^\s*\* ?/gm, "");
+  } else if (text.startsWith("//")) {
+    text = text.replace(/^\/\/\s?/gm, "");
+  }
+  return text.trim();
+}
+
 function nodeTypeString(checker, node) {
   if (node.type) {
     return node.type.getText();
@@ -134,6 +166,7 @@ function isPublicMember(node) {
 function extractClass(checker, node) {
   const fields = {};
   const methods = {};
+  const loc = nodeLocation(node);
 
   for (const member of node.members) {
     if (!isPublicMember(member)) continue;
@@ -143,7 +176,12 @@ function extractClass(checker, node) {
       fields[name] = member.type ? member.type.getText() : "any";
     } else if (ts.isMethodDeclaration(member) && member.name) {
       const name = member.name.getText();
-      methods[name] = funcInfo(checker, member);
+      const fi = funcInfo(checker, member);
+      fi.doc = getJSDoc(member);
+      const mloc = nodeLocation(member);
+      fi.file = mloc.file;
+      fi.line = mloc.line;
+      methods[name] = fi;
     } else if (ts.isConstructorDeclaration(member)) {
       // Extract parameter properties (public/readonly params in constructor)
       for (const p of member.parameters) {
@@ -170,19 +208,25 @@ function extractClass(checker, node) {
     }
   }
 
-  return { fields, methods };
+  return { fields, methods, doc: getJSDoc(node), file: loc.file, line: loc.line };
+
 }
 
 function extractInterface(checker, node) {
   const methods = {};
   const fields = {};
+  const loc = nodeLocation(node);
 
   for (const member of node.members) {
     if (ts.isMethodSignature(member) && member.name) {
-      methods[member.name.getText()] = funcInfo(checker, member);
+      const fi = funcInfo(checker, member);
+      fi.doc = getJSDoc(member);
+      const mloc = nodeLocation(member);
+      fi.file = mloc.file;
+      fi.line = mloc.line;
+      methods[member.name.getText()] = fi;
     } else if (ts.isPropertySignature(member) && member.name) {
       const name = member.name.getText();
-      // If the type is a function signature, treat as method
       if (member.type && ts.isFunctionTypeNode(member.type)) {
         methods[name] = funcInfo(checker, member.type);
       } else {
@@ -193,7 +237,7 @@ function extractInterface(checker, node) {
     }
   }
 
-  return { fields, methods };
+  return { fields, methods, doc: getJSDoc(node), file: loc.file, line: loc.line };
 }
 
 function extract(filePath) {
@@ -238,42 +282,66 @@ function extract(filePath) {
     } else if (ts.isInterfaceDeclaration(node) && node.name) {
       result.interfaces[node.name.getText()] = extractInterface(checker, node);
     } else if (ts.isFunctionDeclaration(node) && node.name) {
-      result.functions[node.name.getText()] = funcInfo(checker, node);
+      const fi = funcInfo(checker, node);
+      fi.doc = getJSDoc(node);
+      const loc = nodeLocation(node);
+      fi.file = loc.file;
+      fi.line = loc.line;
+      result.functions[node.name.getText()] = fi;
     } else if (ts.isTypeAliasDeclaration(node) && node.name) {
-      result.typedefs[node.name.getText()] = node.type.getText();
+      const loc = nodeLocation(node);
+      result.typedefs[node.name.getText()] = {
+        underlying: node.type.getText(),
+        doc: getJSDoc(node),
+        file: loc.file,
+        line: loc.line,
+      };
     } else if (ts.isVariableStatement(node)) {
-      // export const foo: Type = ...
+      const vloc = nodeLocation(node);
+      const vdoc = getJSDoc(node);
       for (const decl of node.declarationList.declarations) {
         if (ts.isIdentifier(decl.name)) {
           const name = decl.name.getText();
           if (name.startsWith("_")) continue;
           if (decl.type) {
             const typeText = decl.type.getText();
-            // If it's a function type, register as function
             if (ts.isFunctionTypeNode(decl.type)) {
-              result.functions[name] = funcInfo(checker, decl.type);
+              const fi = funcInfo(checker, decl.type);
+              fi.doc = vdoc;
+              fi.file = vloc.file;
+              fi.line = vloc.line;
+              result.functions[name] = fi;
             } else {
-              result.typedefs[name] = typeText;
+              result.typedefs[name] = { underlying: typeText, doc: vdoc, file: vloc.file, line: vloc.line };
             }
           } else if (
             decl.initializer &&
             (ts.isArrowFunction(decl.initializer) ||
               ts.isFunctionExpression(decl.initializer))
           ) {
-            result.functions[name] = funcInfo(checker, decl.initializer);
+            const fi = funcInfo(checker, decl.initializer);
+            fi.doc = vdoc;
+            fi.file = vloc.file;
+            fi.line = vloc.line;
+            result.functions[name] = fi;
           } else {
             try {
               const t = checker.getTypeAtLocation(decl);
-              result.typedefs[name] = typeToString(checker, t);
+              result.typedefs[name] = { underlying: typeToString(checker, t), doc: vdoc, file: vloc.file, line: vloc.line };
             } catch {
-              result.typedefs[name] = "any";
+              result.typedefs[name] = { underlying: "any", doc: vdoc, file: vloc.file, line: vloc.line };
             }
           }
         }
       }
     } else if (ts.isEnumDeclaration(node) && node.name) {
-      // Enums → typedefs
-      result.typedefs[node.name.getText()] = "enum";
+      const loc = nodeLocation(node);
+      result.typedefs[node.name.getText()] = {
+        underlying: "enum",
+        doc: getJSDoc(node),
+        file: loc.file,
+        line: loc.line,
+      };
     }
   });
 

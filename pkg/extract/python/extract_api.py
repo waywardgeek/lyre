@@ -116,6 +116,16 @@ def func_info(node):
     return {"params": params, "returns": returns}
 
 
+def get_docstring(node):
+    """Extract the first-line docstring from a function/class node, or ''."""
+    return ast.get_docstring(node) or ""
+
+
+def node_loc(node, filename):
+    """Return (basename, lineno) for a node."""
+    return os.path.basename(filename), getattr(node, "lineno", 0)
+
+
 def is_public(name):
     """True if name should be treated as a public export."""
     return not name.startswith("_")
@@ -166,6 +176,9 @@ def extract_from_source(source_text, filename):
             if all_names is not None and name not in all_names:
                 continue
             result["functions"][name] = func_info(node)
+            fi = result["functions"][name]
+            fi["doc"] = get_docstring(node)
+            fi["file"], fi["line"] = node_loc(node, filename)
 
         # Class definitions
         elif isinstance(node, ast.ClassDef):
@@ -212,9 +225,9 @@ def extract_from_source(source_text, filename):
                     methods[mname] = func_info(item)
 
             if is_protocol:
-                result["interfaces"][class_name] = {"methods": methods}
+                result["interfaces"][class_name] = {"methods": methods, "doc": get_docstring(node), "file": os.path.basename(filename), "line": node.lineno}
             else:
-                result["structs"][class_name] = {"fields": fields, "methods": methods}
+                result["structs"][class_name] = {"fields": fields, "methods": methods, "doc": get_docstring(node), "file": os.path.basename(filename), "line": node.lineno}
 
         # Type aliases: MyType = int  or  MyType: TypeAlias = int
         elif isinstance(node, ast.Assign):
@@ -224,7 +237,7 @@ def extract_from_source(source_text, filename):
                         continue
                     # Only capture simple type aliases (e.g. MyType = List[int])
                     if isinstance(node.value, (ast.Name, ast.Attribute, ast.Subscript, ast.BinOp)):
-                        result["typedefs"][target.id] = unparse_annotation(node.value)
+                        result["typedefs"][target.id] = {"underlying": unparse_annotation(node.value), "file": os.path.basename(filename), "line": node.lineno}
 
         elif isinstance(node, ast.AnnAssign):
             # TypeAlias annotation: MyType: TypeAlias = List[int]
@@ -232,7 +245,7 @@ def extract_from_source(source_text, filename):
                 if node.value is not None and isinstance(
                     node.annotation, ast.Name
                 ) and node.annotation.id == "TypeAlias":
-                    result["typedefs"][node.target.id] = unparse_annotation(node.value)
+                    result["typedefs"][node.target.id] = {"underlying": unparse_annotation(node.value), "file": os.path.basename(filename), "line": node.lineno}
 
     return result
 

@@ -73,7 +73,7 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 	fset := token.NewFileSet()
 	var files []*ast.File
 	for _, name := range goFiles {
-		f, err := goparser.ParseFile(fset, filepath.Join(absDir, name), nil, 0)
+		f, err := goparser.ParseFile(fset, filepath.Join(absDir, name), nil, goparser.ParseComments)
 		if err != nil {
 			return "", "", fmt.Errorf("parsing %s: %w", name, err)
 		}
@@ -102,16 +102,29 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 					if !ok || !IsExported(ts.Name.Name) {
 						continue
 					}
+					doc := docText(ts.Doc, d.Doc)
+					pos := fset.Position(ts.Pos())
 					switch t := ts.Type.(type) {
 					case *ast.StructType:
-						structs = append(structs, collectStruct(ts.Name.Name, ts, t))
+						s := collectStruct(ts.Name.Name, ts, t)
+						s.Doc = doc
+						s.File = filepath.Base(pos.Filename)
+						s.Line = pos.Line
+						structs = append(structs, s)
 					case *ast.InterfaceType:
-						interfaces = append(interfaces, collectInterface(ts.Name.Name, ts, t))
+						iface := collectInterface(ts.Name.Name, ts, t)
+						iface.Doc = doc
+						iface.File = filepath.Base(pos.Filename)
+						iface.Line = pos.Line
+						interfaces = append(interfaces, iface)
 					default:
 						typedefs = append(typedefs, typedefDecl{
 							Name:       ts.Name.Name,
 							TypeParams: typeParamString(ts),
 							Underlying: TypeString(ts.Type),
+							Doc:        doc,
+							File:       filepath.Base(pos.Filename),
+							Line:       pos.Line,
 						})
 					}
 				}
@@ -122,9 +135,13 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 				if d.Recv != nil {
 					continue // methods collected separately
 				}
+				pos := fset.Position(d.Pos())
 				functions = append(functions, funcDecl{
 					Name: d.Name.Name,
 					Sig:  BuildSignature(d, fset),
+					Doc:  docText(d.Doc, nil),
+					File: filepath.Base(pos.Filename),
+					Line: pos.Line,
 				})
 			}
 		}
@@ -140,9 +157,13 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 			}
 			recvName := receiverTypeName(fd.Recv.List[0].Type)
 			if recvName != "" && IsExported(recvName) {
+				pos := fset.Position(fd.Pos())
 				methodMap[recvName] = append(methodMap[recvName], funcDecl{
 					Name: fd.Name.Name,
 					Sig:  BuildSignature(fd, fset),
+					Doc:  docText(fd.Doc, nil),
+					File: filepath.Base(pos.Filename),
+					Line: pos.Line,
 				})
 			}
 		}
@@ -158,6 +179,8 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 	// Structs
 	for _, s := range structs {
 		b.WriteString("\n")
+		writeDoc(&b, s.Doc)
+		writeLocation(&b, s.File, s.Line)
 		b.WriteString(fmt.Sprintf("type %s%s struct {\n", s.Name, s.TypeParams))
 		for _, f := range s.Fields {
 			b.WriteString(fmt.Sprintf("\t%s %s\n", f.Name, f.Type))
@@ -167,7 +190,10 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 		// Methods for this struct
 		if methods, ok := methodMap[s.Name]; ok {
 			for _, m := range methods {
-				b.WriteString(fmt.Sprintf("\n%s\n", m.Sig))
+				b.WriteString("\n")
+				writeDoc(&b, m.Doc)
+				writeLocation(&b, m.File, m.Line)
+				b.WriteString(fmt.Sprintf("%s\n", m.Sig))
 			}
 		}
 	}
@@ -175,6 +201,8 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 	// Interfaces
 	for _, iface := range interfaces {
 		b.WriteString("\n")
+		writeDoc(&b, iface.Doc)
+		writeLocation(&b, iface.File, iface.Line)
 		b.WriteString(fmt.Sprintf("type %s%s interface {\n", iface.Name, iface.TypeParams))
 		for _, m := range iface.Methods {
 			b.WriteString(fmt.Sprintf("\t%s\n", m))
@@ -184,12 +212,18 @@ func GenerateLDDFile(pkgDir string) (string, string, error) {
 
 	// Typedefs
 	for _, td := range typedefs {
-		b.WriteString(fmt.Sprintf("\ntype %s%s %s\n", td.Name, td.TypeParams, td.Underlying))
+		b.WriteString("\n")
+		writeDoc(&b, td.Doc)
+		writeLocation(&b, td.File, td.Line)
+		b.WriteString(fmt.Sprintf("type %s%s %s\n", td.Name, td.TypeParams, td.Underlying))
 	}
 
 	// Standalone functions
 	for _, fn := range functions {
-		b.WriteString(fmt.Sprintf("\n%s\n", fn.Sig))
+		b.WriteString("\n")
+		writeDoc(&b, fn.Doc)
+		writeLocation(&b, fn.File, fn.Line)
+		b.WriteString(fmt.Sprintf("%s\n", fn.Sig))
 	}
 
 	// Auto-generated index
@@ -418,10 +452,47 @@ func buildIfaceMethodSig(name string, fi *extract.FuncInfo) string {
 
 // Helper types for generation
 
+// docText returns the doc comment text from a TypeSpec's own doc or
+// the parent GenDecl's doc, trimmed of trailing whitespace.
+func docText(primary, fallback *ast.CommentGroup) string {
+	cg := primary
+	if cg == nil {
+		cg = fallback
+	}
+	if cg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cg.Text())
+}
+
+// writeDoc emits a doc comment block (each line prefixed with //).
+func writeDoc(b *strings.Builder, doc string) {
+	if doc == "" {
+		return
+	}
+	for _, line := range strings.Split(doc, "\n") {
+		if line == "" {
+			b.WriteString("//\n")
+		} else {
+			b.WriteString("// " + line + "\n")
+		}
+	}
+}
+
+// writeLocation emits a file:line reference comment.
+func writeLocation(b *strings.Builder, file string, line int) {
+	if file != "" && line > 0 {
+		b.WriteString(fmt.Sprintf("// %s:%d\n", file, line))
+	}
+}
+
 type structDecl struct {
 	Name       string
 	TypeParams string
 	Fields     []fieldDecl
+	Doc        string
+	File       string
+	Line       int
 }
 
 type fieldDecl struct {
@@ -433,17 +504,26 @@ type ifaceDecl struct {
 	Name       string
 	TypeParams string
 	Methods    []string // method signatures
+	Doc        string
+	File       string
+	Line       int
 }
 
 type typedefDecl struct {
 	Name       string
 	TypeParams string
 	Underlying string
+	Doc        string
+	File       string
+	Line       int
 }
 
 type funcDecl struct {
 	Name string
 	Sig  string
+	Doc  string
+	File string
+	Line int
 }
 
 func collectStruct(name string, ts *ast.TypeSpec, st *ast.StructType) structDecl {
