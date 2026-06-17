@@ -85,6 +85,7 @@ type lyFuncJSON struct {
 type lyParamJSON struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+	Mut  bool   `json:"mut,omitempty"`
 }
 
 // --- Binary location ---
@@ -183,7 +184,7 @@ func convertPackageJSON(raw *lyPackageJSON) *extract.PackageInfo {
 func convertFuncJSON(fn lyFuncJSON) *extract.FuncInfo {
 	fi := &extract.FuncInfo{}
 	for _, p := range fn.Params {
-		fi.Params = append(fi.Params, extract.ParamInfo{Name: p.Name, Type: p.Type})
+		fi.Params = append(fi.Params, extract.ParamInfo{Name: p.Name, Type: p.Type, IsMut: p.Mut})
 	}
 	fi.Returns = fn.Returns
 	return fi
@@ -275,6 +276,9 @@ func buildLyFuncSig(name string, hasSelf bool, fi *extract.FuncInfo) string {
 			b.WriteString(", ")
 		}
 		first = false
+		if p.IsMut {
+			b.WriteString("mut ")
+		}
 		b.WriteString(p.Name)
 		if p.Type != "" && p.Type != "any" {
 			b.WriteString(": ")
@@ -455,7 +459,7 @@ func compareLyStructs(declared, actual *extract.PackageInfo, file, src string, r
 		}
 		for mn := range ds.Methods {
 			if _, ok := as.Methods[mn]; !ok {
-				r.add(SevWarning, file, src, fmt.Sprintf("%s.%s: method declared in LDD but not found in source", name, mn))
+				r.add(SevError, file, src, fmt.Sprintf("%s.%s: method declared in LDD but not found in source", name, mn))
 			}
 		}
 	}

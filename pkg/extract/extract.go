@@ -31,8 +31,9 @@ type FuncInfo struct {
 
 // ParamInfo describes a function parameter.
 type ParamInfo struct {
-	Name string
-	Type string
+	Name  string
+	Type  string
+	IsMut bool
 }
 
 // TypeDefInfo describes a type alias or newtype.
