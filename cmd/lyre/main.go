@@ -21,7 +21,7 @@ import (
 	tsext "github.com/waywardgeek/lyre/pkg/extract/typescript"
 	"github.com/waywardgeek/lyre/pkg/gen"
 	"github.com/waywardgeek/lyre/pkg/lint"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 const usage = `Usage: lyre <command> [arguments]
@@ -270,7 +270,7 @@ func cmdGen(args []string) error {
 	// Detect language from source files in the directory
 	lang := detectDirLanguage(pkgDir)
 
-	// Rich path: Extract → Seed → udd.Write. Bypasses the legacy
+	// Rich path: Extract → Seed → cdd.Write. Bypasses the legacy
 	// language-specific GenerateXxx because the seeding step is
 	// language-agnostic and lives in pkg/gen.
 	if rich {
@@ -322,7 +322,7 @@ func writeGenerated(outPath, content string) error {
 
 // genRich runs the --rich pipeline: extract a *PackageInfo via the
 // language-specific extractor, seed TODO placeholders into every empty
-// rich-doc slot, then write via udd.Write. The seeding step (pkg/gen)
+// rich-doc slot, then write via cdd.Write. The seeding step (pkg/gen)
 // is language-agnostic.
 func genRich(pkgDir, lang string) error {
 	var (
@@ -355,12 +355,12 @@ func genRich(pkgDir, lang string) error {
 		return err
 	}
 	outPath := filepath.Join(absDir, p.Name+"."+ext)
-	return writeGenerated(outPath, udd.Write(p))
+	return writeGenerated(outPath, cdd.Write(p))
 }
 // --- lint ---
 
 // cmdLint runs the language-agnostic linter on one or more .lyric files.
-// Each file is parsed via pkg/udd (any syntactic error is fatal), then
+// Each file is parsed via pkg/cdd (any syntactic error is fatal), then
 // pkg/lint inspects the resulting *PackageInfo for recoverable issues
 // (W001-W008). Exit code is 1 if --fatal-warnings is set and any warning
 // fired; otherwise 0 regardless of warning count.
@@ -390,7 +390,7 @@ func cmdLint(args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		pkg, err := udd.Parse(string(data), path)
+		pkg, err := cdd.Parse(string(data), path)
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}

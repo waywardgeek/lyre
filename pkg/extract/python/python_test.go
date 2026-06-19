@@ -16,7 +16,7 @@ import (
 
 	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/extract/python"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // sampleSource is a small Python module exercising:
@@ -268,7 +268,7 @@ func TestExtractPy_SkipsTestAndUnderscoreFiles(t *testing.T) {
 	}
 }
 
-// --- GeneratePy + round-trip through udd.Parse ----------------------------
+// --- GeneratePy + round-trip through cdd.Parse ----------------------------
 
 func TestGeneratePy_OutputFormat(t *testing.T) {
 	requireExtractor(t)
@@ -303,16 +303,16 @@ func TestGeneratePy_OutputFormat(t *testing.T) {
 	}
 }
 
-func TestGeneratePy_RoundTripsThroughUDD(t *testing.T) {
+func TestGeneratePy_RoundTripsThroughCDD(t *testing.T) {
 	requireExtractor(t)
 	dir := writeTempPy(t, sampleSource)
 	_, content, err := python.GeneratePy(dir)
 	if err != nil {
 		t.Fatalf("GeneratePy: %v", err)
 	}
-	p, err := udd.Parse(content, "shapes.py.lyric")
+	p, err := cdd.Parse(content, "shapes.py.lyric")
 	if err != nil {
-		t.Fatalf("udd.Parse: %v\n--- content ---\n%s", err, content)
+		t.Fatalf("cdd.Parse: %v\n--- content ---\n%s", err, content)
 	}
 	circle, ok := p.Structs["Circle"]
 	if !ok {
@@ -486,7 +486,7 @@ func TestUpdatePy_AlreadyUpToDate(t *testing.T) {
 }
 
 // TestUpdatePy_PreservesHumanProse uses the cleaner approach: construct a
-// PackageInfo with prose set, write it via udd.Write to seed the fixture,
+// PackageInfo with prose set, write it via cdd.Write to seed the fixture,
 // then run UpdatePy. No fragile string-splicing.
 func TestUpdatePy_PreservesHumanProse(t *testing.T) {
 	requireExtractor(t)
@@ -506,7 +506,7 @@ func TestUpdatePy_PreservesHumanProse(t *testing.T) {
 			}
 		}
 	}
-	if err := os.WriteFile(outPath, []byte(udd.Write(p)), 0644); err != nil {
+	if err := os.WriteFile(outPath, []byte(cdd.Write(p)), 0644); err != nil {
 		t.Fatalf("writing seed .py.lyric: %v", err)
 	}
 
@@ -547,9 +547,9 @@ func TestUpdatePy_RefreshesPositionsAndSource(t *testing.T) {
 	}
 
 	raw, _ := os.ReadFile(outPath)
-	p, err := udd.Parse(string(raw), outPath)
+	p, err := cdd.Parse(string(raw), outPath)
 	if err != nil {
-		t.Fatalf("udd.Parse: %v", err)
+		t.Fatalf("cdd.Parse: %v", err)
 	}
 	nc, ok := p.Functions["new_circle"]
 	if !ok {

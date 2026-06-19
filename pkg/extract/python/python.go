@@ -1,10 +1,10 @@
 // Package python's `.py.lyric` v2 entry points: ExtractPy, GeneratePy,
-// UpdatePy, VerifyPy. The `.py.lyric` file is the persistent UDD artifact
+// UpdatePy, VerifyPy. The `.py.lyric` file is the persistent CDD artifact
 // for a Python directory — a small declarative DSL parsed/written by
-// pkg/udd, whose payload lines (field types, method signatures, function
+// pkg/cdd, whose payload lines (field types, method signatures, function
 // signatures) are verbatim Python text treated as opaque strings.
 //
-// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// Architectural principle (rich-doc upgrade plan, top): CDD documentation
 // lives in the .lyric file ONLY, never as `#ldd:source`, `#ldd:why`, or
 // other smuggled directives in Python source. Extractors are
 // signatures-only. The legacy ParsePyLDDFile / // --- index --- layout
@@ -46,7 +46,7 @@ import (
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 //go:embed extract_api.py
@@ -129,7 +129,7 @@ type pyPackageJSON struct {
 type pyStructJSON struct {
 	Fields  map[string]string     `json:"fields"`
 	Methods map[string]pyFuncJSON `json:"methods"`
-	Doc     string                `json:"doc"` // ignored — UDD doc lives in .lyric only
+	Doc     string                `json:"doc"` // ignored — CDD doc lives in .lyric only
 	File    string                `json:"file"`
 	Line    int                   `json:"line"`
 }
@@ -380,7 +380,7 @@ func GeneratePy(srcDir string) (outPath, content string, err error) {
 		return "", "", err
 	}
 	outPath = filepath.Join(absDir, p.Name+".py.lyric")
-	content = udd.Write(p)
+	content = cdd.Write(p)
 	return outPath, content, nil
 }
 
@@ -392,7 +392,7 @@ func UpdatePy(lyricPath string) (added []string, err error) {
 	if err != nil {
 		return nil, err
 	}
-	existing, err := udd.Parse(string(raw), lyricPath)
+	existing, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}
@@ -405,7 +405,7 @@ func UpdatePy(lyricPath string) (added []string, err error) {
 
 	added = mergeFreshIntoExisting(existing, fresh)
 
-	out := udd.Write(existing)
+	out := cdd.Write(existing)
 	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
 		return nil, err
 	}
@@ -419,7 +419,7 @@ func VerifyPy(lyricPath string) (*VerifyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	declared, err := udd.Parse(string(raw), lyricPath)
+	declared, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}

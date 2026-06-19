@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/waywardgeek/lyre/pkg/extract/golang"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // sampleSource is a simple Go package used as test input.
@@ -147,7 +147,7 @@ func TestExtractGo_SkipsUnexported(t *testing.T) {
 	}
 }
 
-// --- GenerateGo + round-trip through udd.Parse -----------------------------
+// --- GenerateGo + round-trip through cdd.Parse -----------------------------
 
 func TestGenerateGo_OutputFormat(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
@@ -180,15 +180,15 @@ func TestGenerateGo_OutputFormat(t *testing.T) {
 	}
 }
 
-func TestGenerateGo_RoundTripsThroughUDD(t *testing.T) {
+func TestGenerateGo_RoundTripsThroughCDD(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
 	_, content, err := golang.GenerateGo(dir)
 	if err != nil {
 		t.Fatalf("GenerateGo: %v", err)
 	}
-	p, err := udd.Parse(content, "shapes.go.lyric")
+	p, err := cdd.Parse(content, "shapes.go.lyric")
 	if err != nil {
-		t.Fatalf("udd.Parse: %v\n--- content ---\n%s", err, content)
+		t.Fatalf("cdd.Parse: %v\n--- content ---\n%s", err, content)
 	}
 	if p.Name != "shapes" {
 		t.Errorf("parsed name: want shapes, got %q", p.Name)
@@ -420,9 +420,9 @@ func TestUpdateGo_RefreshesPositionsAndSource(t *testing.T) {
 
 	// Parse the resulting file and confirm NewCircle now points deeper.
 	raw, _ := os.ReadFile(outPath)
-	p, err := udd.Parse(string(raw), outPath)
+	p, err := cdd.Parse(string(raw), outPath)
 	if err != nil {
-		t.Fatalf("udd.Parse: %v", err)
+		t.Fatalf("cdd.Parse: %v", err)
 	}
 	nc, ok := p.Functions["NewCircle"]
 	if !ok {

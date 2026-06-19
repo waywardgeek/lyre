@@ -1,9 +1,9 @@
 // Package udd implements the parser and writer for the `.lyric` v2 format
-// — the file format used by Understanding-Driven Development.
+// — the file format used by Context-Driven Development.
 //
 // The format is a small indent-significant DSL whose payload lines (field
 // types, method signatures, function signatures) are verbatim native-language
-// text treated as opaque strings. See `pkg/udd/spec.md` for the canonical
+// text treated as opaque strings. See `pkg/cdd/spec.md` for the canonical
 // grammar and `~/projects/lyric/cr/docs/understanding-driven-development.md`
 // for the methodology this format implements.
 //
@@ -26,7 +26,7 @@
 // Doc}; StructInfo.Doc; InterfaceInfo.Doc; TypeDefInfo.{Doc, Underlying
 // for typedefs where typedef block omits the underlying type}. These are
 // extractor-internal forms not exposed in the `.lyric` surface.
-package udd
+package cdd
 
 import (
 	"encoding/json"
@@ -252,7 +252,7 @@ func (w *writer) decl(ind int, d declRef) {
 	case "typedef":
 		w.typedefDecl(ind, d.name, d.t)
 	default:
-		panic(fmt.Sprintf("udd.writer: unknown decl kind %q", d.kind))
+		panic(fmt.Sprintf("cdd.writer: unknown decl kind %q", d.kind))
 	}
 }
 

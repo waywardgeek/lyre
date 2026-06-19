@@ -1,10 +1,10 @@
 // Package typescript's `.ts.lyric` v2 entry points: ExtractTs, GenerateTs,
-// UpdateTs, VerifyTs. The `.ts.lyric` file is the persistent UDD artifact
+// UpdateTs, VerifyTs. The `.ts.lyric` file is the persistent CDD artifact
 // for a TypeScript directory — a small declarative DSL parsed/written by
-// pkg/udd, whose payload lines (field types, method signatures, function
+// pkg/cdd, whose payload lines (field types, method signatures, function
 // signatures) are verbatim TypeScript text treated as opaque strings.
 //
-// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// Architectural principle (rich-doc upgrade plan, top): CDD documentation
 // lives in the .lyric file ONLY, never as `// why:` or `/** doc */` smuggled
 // directives in TS source. Extractors are signatures-only. The legacy
 // //ldd:source, //ldd:why, and the parseTsLDDManual / index-marker layout
@@ -32,7 +32,7 @@ import (
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // packageDir is the on-disk directory of this Go package, used to locate
@@ -383,7 +383,7 @@ func GenerateTs(srcDir string) (outPath, content string, err error) {
 		return "", "", err
 	}
 	outPath = filepath.Join(absDir, p.Name+".ts.lyric")
-	content = udd.Write(p)
+	content = cdd.Write(p)
 	return outPath, content, nil
 }
 
@@ -396,7 +396,7 @@ func UpdateTs(lyricPath string) (added []string, err error) {
 	if err != nil {
 		return nil, err
 	}
-	existing, err := udd.Parse(string(raw), lyricPath)
+	existing, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}
@@ -409,7 +409,7 @@ func UpdateTs(lyricPath string) (added []string, err error) {
 
 	added = mergeFreshIntoExisting(existing, fresh)
 
-	out := udd.Write(existing)
+	out := cdd.Write(existing)
 	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
 		return nil, err
 	}
@@ -423,7 +423,7 @@ func VerifyTs(lyricPath string) (*VerifyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	declared, err := udd.Parse(string(raw), lyricPath)
+	declared, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}

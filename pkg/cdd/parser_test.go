@@ -3,7 +3,7 @@
 // confirm the parser rejects malformed input with line-number-bearing
 // messages.
 
-package udd
+package cdd
 
 import (
 	"reflect"

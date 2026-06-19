@@ -1,10 +1,10 @@
 // Package golang's `.go.lyric` v2 entry points: ExtractGo, GenerateGo,
-// UpdateGo, VerifyGo. The `.go.lyric` file is the persistent UDD artifact
-// for a Go package — a small declarative DSL parsed/written by pkg/udd,
+// UpdateGo, VerifyGo. The `.go.lyric` file is the persistent CDD artifact
+// for a Go package — a small declarative DSL parsed/written by pkg/cdd,
 // whose payload lines (field types, method signatures, function signatures)
 // are verbatim Go text treated as opaque strings.
 //
-// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// Architectural principle (rich-doc upgrade plan, top): CDD documentation
 // lives in the .lyric file ONLY, never as `// why:` or `// doc` comments in
 // Go source. Extractors are signatures-only. The legacy //ldd:source and
 // //ldd:why directives, and the //+// doc-comment scraping, are gone.
@@ -28,14 +28,14 @@ import (
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // docText returns the trimmed text of primary, falling back to fallback. Kept
 // only for the legacy ExtractDir/ExtractFiles paths in golang.go which still
 // populate the extractor-internal StructInfo.Doc / FuncInfo.Doc fields. These
 // values do NOT round-trip through .lyric and are not consulted by GenerateGo
-// / UpdateGo / VerifyGo — UDD prose lives in the .lyric file only.
+// / UpdateGo / VerifyGo — CDD prose lives in the .lyric file only.
 func docText(primary, fallback *ast.CommentGroup) string {
 	cg := primary
 	if cg == nil {
@@ -235,7 +235,7 @@ func GenerateGo(srcDir string) (outPath, content string, err error) {
 		return "", "", err
 	}
 	outPath = filepath.Join(absDir, p.Name+".go.lyric")
-	content = udd.Write(p)
+	content = cdd.Write(p)
 	return outPath, content, nil
 }
 
@@ -248,7 +248,7 @@ func UpdateGo(lyricPath string) (added []string, err error) {
 	if err != nil {
 		return nil, err
 	}
-	existing, err := udd.Parse(string(raw), lyricPath)
+	existing, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}
@@ -261,7 +261,7 @@ func UpdateGo(lyricPath string) (added []string, err error) {
 
 	added = mergeFreshIntoExisting(existing, fresh)
 
-	out := udd.Write(existing)
+	out := cdd.Write(existing)
 	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
 		return nil, err
 	}
@@ -388,7 +388,7 @@ func VerifyGo(lyricPath string) (*VerifyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	declared, err := udd.Parse(string(raw), lyricPath)
+	declared, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}

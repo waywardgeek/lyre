@@ -8,10 +8,10 @@
 
 Before doing any sprint work, read these in order:
 
-1. **`~/projects/lyric/cr/docs/understanding-driven-development.md`** — the
-   methodology. UDD is what this whole sprint is in service of. The plan below
+1. **`~/projects/lyric/cr/docs/context-driven-development.md`** — the
+   methodology. CDD is what this whole sprint is in service of. The plan below
    only makes sense in that frame.
-2. **`~/projects/lyre/pkg/udd/spec.md`** — the canonical `.lyric` v2 format
+2. **`~/projects/lyre/pkg/cdd/spec.md`** — the canonical `.lyric` v2 format
    spec. Locked grammar, locked defaults.
 3. **This plan**, including the Amendments section at the bottom for every
    decision made during the sprint.
@@ -22,7 +22,7 @@ is implementation detail in its service.
 
 ## Core architectural principle: documentation lives in the `.lyric` file, not in source
 
-UDD documentation — `why:`, `doc "..."` blocks, `invariant "..."` blocks, per-field `doc:`, per-method `why:` — lives **only in the `.lyric` file**, never in the native source. Native source files (`.go`, `.ts`, `.ly`, `.py`) stay clean: minimal language-idiomatic doc comments only where they serve native tooling (godoc tooltips, JSDoc IDE hovers, etc.), and nothing else.
+CDD documentation — `why:`, `doc "..."` blocks, `invariant "..."` blocks, per-field `doc:`, per-method `why:` — lives **only in the `.lyric` file**, never in the native source. Native source files (`.go`, `.ts`, `.ly`, `.py`) stay clean: minimal language-idiomatic doc comments only where they serve native tooling (godoc tooltips, JSDoc IDE hovers, etc.), and nothing else.
 
 Consequences:
 
@@ -112,7 +112,7 @@ module checker
 
 1. **Signatures are verbatim native text.** The `field errors: [string]` line above is *the exact Lyric source text* of that field. For Go it would be `field errors []error`. For TS, `field errors: string[]`. The extractor produces this text from source via the native parser's pretty-printer (`go/printer`, `node.getText()`, etc.). Lyre never parses it — it does whitespace-normalized string equality.
 2. **`.lyric` framing is identical across all languages.** `module`, `class`, `struct`, `interface`, `field`, `method`, `func`, `why:`, `doc "..."`, `invariant "..."`, `source:`, `verified-by:`, `procedural` — same in every language.
-3. **The file extension still carries the routing hint.** `.go.lyric` means "`.lyric` file describing Go source"; tells Lyre which extractor to invoke for verification. The outer `.lyric` is the Understanding-Driven Development declaration file. The inner extension is now metadata, not a syntax claim.
+3. **The file extension still carries the routing hint.** `.go.lyric` means "`.lyric` file describing Go source"; tells Lyre which extractor to invoke for verification. The outer `.lyric` is the Context-Driven Development declaration file. The inner extension is now metadata, not a syntax claim.
 4. **The DSL parser is small.** ~400 lines of Go. Indent-significant block structure, recognized keys, heredoc strings, opaque payload lines. Closer to a config-file parser than a programming-language parser.
 
 ## Success criteria (unchanged from v1)
@@ -122,7 +122,7 @@ module checker
 3. `lyre gen --rich` scaffolds a template with rich-section headers as TODOs.
 4. Round-trip tests for each language prove every rich section survives gen → update → reparse.
 5. A backfilled `checker.ly.lyric` matches `checker.forge` in content density, as proof of method.
-6. The UDD methodology doc documents the canonical template.
+6. The CDD methodology doc documents the canonical template.
 
 ## The 8 rich sections (the feature inventory)
 
@@ -150,7 +150,7 @@ After the pivot, each extractor has exactly one job: **read source, produce an i
 | **Lyric** | `~/projects/lyric/tools/extract_api.ly` + `lyric.go` | extract_api → JSON → `PackageInfo` with verbatim source text |
 | **Python** | `pkg/extract/python/extract_api.py` + `python.go` | ast → JSON → `PackageInfo` |
 
-A **single shared writer** in `pkg/udd/` consumes `PackageInfo` and emits files. A **single shared parser** in `pkg/udd/` consumes files and produces `PackageInfo`. Verification is `PackageInfo` (from source) vs `PackageInfo` (from `.lyric` v2 format) — same data type, comparable by string equality on signatures plus structural equality on metadata.
+A **single shared writer** in `pkg/cdd/` consumes `PackageInfo` and emits files. A **single shared parser** in `pkg/cdd/` consumes files and produces `PackageInfo`. Verification is `PackageInfo` (from source) vs `PackageInfo` (from `.lyric` v2 format) — same data type, comparable by string equality on signatures plus structural equality on metadata.
 
 This is the architectural win: per-language work shrinks to source-side extraction only. Emit, parse, round-trip preservation all live in one place.
 
@@ -228,7 +228,7 @@ Signatures themselves continue to live in existing fields (`Fields map[string]st
 
 ### Phase 2 — `.lyric` parser + writer (2–3 days, central work)
 
-The new heart of Lyre. Lives at `pkg/udd/`.
+The new heart of Lyre. Lives at `pkg/cdd/`.
 
 **Inherits from Phase 1**: per-field doc lives on `extract.FieldInfo.Doc`, not
 on a separate `per-field doc` map. Phase 2's writer should therefore emit `doc:`
@@ -244,11 +244,11 @@ field iface_decls: Dict<Sym, InterfaceDecl>
 `pkg/extract/extract_test.go` is the canonical worked example of every
 rich-doc field the writer must round-trip.
 
-**`pkg/udd/spec.md`** — the grammar specification. Indent-significant. Recognized block heads: `module`, `class`, `struct`, `interface`, `enum`, `field`, `method`, `func`, `doc`, `invariant`. Recognized inline keys: `why:`, `source:`, `doc:`, `verified-by:`, `procedural` (bare), `fields:`, `methods:`. Heredoc strings via `"""..."""`. Payload lines (anything that isn't a recognized key) are opaque strings.
+**`pkg/cdd/spec.md`** — the grammar specification. Indent-significant. Recognized block heads: `module`, `class`, `struct`, `interface`, `enum`, `field`, `method`, `func`, `doc`, `invariant`. Recognized inline keys: `why:`, `source:`, `doc:`, `verified-by:`, `procedural` (bare), `fields:`, `methods:`. Heredoc strings via `"""..."""`. Payload lines (anything that isn't a recognized key) are opaque strings.
 
-**`pkg/udd/parser.go`** — reads `.lyric` text → `*extract.PackageInfo`. Tokenizer is line-based (split on newline, then indent-counted). Parser is a small recursive descent over the block structure.
+**`pkg/cdd/parser.go`** — reads `.lyric` text → `*extract.PackageInfo`. Tokenizer is line-based (split on newline, then indent-counted). Parser is a small recursive descent over the block structure.
 
-**`pkg/udd/writer.go`** — `*extract.PackageInfo` → `.lyric` text. Deterministic key ordering, deterministic whitespace, fixed 2-space indent.
+**`pkg/cdd/writer.go`** — `*extract.PackageInfo` → `.lyric` text. Deterministic key ordering, deterministic whitespace, fixed 2-space indent.
 
 **Round-trip invariant**: for any `PackageInfo p`, `Parse(Write(p))` is structurally equal to `p`. Tested with property-style coverage in `parser_test.go`.
 
@@ -273,7 +273,7 @@ This is a *simplification* of every existing extractor — we delete code, not a
 
 **3d Python** (½ day, lowest priority): same pattern as TS.
 
-**Per-language tests**: write small native source (no UDD comments), run extractor, assert signature strings match what's in the source (modulo whitespace).
+**Per-language tests**: write small native source (no CDD comments), run extractor, assert signature strings match what's in the source (modulo whitespace).
 
 ### Phase 4 — `lyre lint` (3h, parallel after Phase 2)
 
@@ -300,9 +300,9 @@ Extend `cmdGen` to accept `--rich`. When set, scaffolds an file with `doc "Archi
 
 A one-shot Go program at `cmd/lyre-migrate/main.go` that converts existing `.lyric` files (native-parseable format) to format.
 
-- **Only reads existing `.lyric` files.** Does not crawl source code for hand-written doc comments — per the core principle, those aren't a legitimate source of UDD content.
+- **Only reads existing `.lyric` files.** Does not crawl source code for hand-written doc comments — per the core principle, those aren't a legitimate source of CDD content.
 - Extracts whatever rich content is present in the v1 `.lyric` file: `//ldd:why` strings (legacy comment-encoded format from v1), hand-written `## Invariants` comment blocks, the auto-generated index zone (discarded — regenerated from source).
-- Emits via `pkg/udd/writer.go`.
+- Emits via `pkg/cdd/writer.go`.
 - Leaves a `# MIGRATED FROM v1 — review hand-curated sections` header so a human knows to verify.
 - One-shot tool; can be deleted from the repo after the cutover.
 
@@ -312,8 +312,8 @@ Shrinks to ½ day (from 1 day in v1) because we don't have to parse source-side 
 
 ### Phase 7 — Documentation and backfill (2–4h)
 
-1. Write `~/projects/lyre/cr/docs/pkg/udd/spec.md` — the canonical grammar with examples.
-2. Update `~/projects/lyric/cr/docs/understanding-driven-development.md`:
+1. Write `~/projects/lyre/cr/docs/pkg/cdd/spec.md` — the canonical grammar with examples.
+2. Update `~/projects/lyric/cr/docs/context-driven-development.md`:
    - Document the format with `checker.forge` cited as the rich-content reference.
    - Note the GDD heritage — restore the original Grok-Driven Development design intent.
    - Mark the native-parseable approach as superseded.
@@ -336,13 +336,13 @@ Shrinks to ½ day (from 1 day in v1) because we don't have to parse source-side 
 
 **Total**: ~6–8 working days single-threaded. With three parallel agents for 3a/3b/3c after Phase 2 lands: ~4–5 wall-clock days.
 
-**Compared to v1**: ~40% less total work. The savings come from two sources: (a) per-language emit/update/round-trip collapsing into one shared writer, and (b) extractors becoming signatures-only because UDD documentation lives exclusively in the file.
+**Compared to v1**: ~40% less total work. The savings come from two sources: (a) per-language emit/update/round-trip collapsing into one shared writer, and (b) extractors becoming signatures-only because CDD documentation lives exclusively in the file.
 
 ## Risks and open questions
 
 1. **`extract_api` build path for Lyric**. Need to confirm rebuilding `~/projects/lyric/tools/extract_api` from `extract_api.ly` doesn't require touching `lyric.stable`. If it does, Phase 3c is blocked or out of scope; Lyric source files would stay on the v1 format until the build path is unblocked. Verify before starting Phase 3c.
 
-2. **`.lyric` v2 syntax design freeze**. The sketch above is a starting point. Spend the first hours of Phase 2 producing `pkg/udd/spec.md` and locking the grammar before writing the parser. Specifically: indent vs braces, heredoc syntax, comment syntax (`#` is shown above; could be `//`), key ordering rules.
+2. **`.lyric` v2 syntax design freeze**. The sketch above is a starting point. Spend the first hours of Phase 2 producing `pkg/cdd/spec.md` and locking the grammar before writing the parser. Specifically: indent vs braces, heredoc syntax, comment syntax (`#` is shown above; could be `//`), key ordering rules.
 
 3. **Migration fidelity**. Phase 6's lossy v1-to-v2 converter will miss some hand-written content if instances used non-standard comment patterns. Mitigation: the `# MIGRATED FROM v1` header forces a human review pass. Accept some content loss in migration; recover via the rich rewrite Phase 7 establishes the template for.
 
@@ -350,7 +350,7 @@ Shrinks to ½ day (from 1 day in v1) because we don't have to parse source-side 
 
 5. **`source: file:line` drift**. Line numbers in go stale fast as source edits move things around. Two options: (a) accept staleness, refresh on `lyre update`; (b) elide line numbers, keep file references only. v1 had this same issue (Zone 2's location comments); not new. Decision: keep on `update`, accept staleness between updates, never use as ground truth.
 
-6. **Whitespace normalization for signature comparison**. "func Foo(x int) error" vs "func Foo(x int) error" should compare equal. Mitigation: normalize collapse-runs-of-whitespace before comparing. Document in `pkg/udd/spec.md`.
+6. **Whitespace normalization for signature comparison**. "func Foo(x int) error" vs "func Foo(x int) error" should compare equal. Mitigation: normalize collapse-runs-of-whitespace before comparing. Document in `pkg/cdd/spec.md`.
 
 7. **The auto-recall lineage**. Auto-recall surfaced `docs/grok-driven-development.md` and `docs/grok-language.md` — the original GDD methodology doc. If those files still exist somewhere (likely under coderhapsody/docs/ or an old Lyric checkout), reading them might reveal prior design we should crib from rather than reinvent. **First action of Phase 2**: search for and read those original GDD docs before designing the `.lyric` v2 format from scratch.
 
@@ -370,12 +370,12 @@ Shrinks to ½ day (from 1 day in v1) because we don't have to parse source-side 
 2. `lyre lint ~/projects/lyric/src/checker/checker.ly.lyric` reports zero warnings against the backfilled file.
 3. `checker.ly.lyric` (post-backfill) and `checker.forge` contain the same eight section types with similar content density — eyeball review by Bill against side-by-side.
 4. All v1-format `.lyric` files in `~/projects/lyric/src/` and `~/projects/lyre/pkg/` migrated successfully (or explicitly marked for manual review where lossy).
-5. `~/projects/lyric/cr/docs/understanding-driven-development.md` and `~/projects/lyre/cr/docs/pkg/udd/spec.md` are current.
+5. `~/projects/lyric/cr/docs/context-driven-development.md` and `~/projects/lyre/cr/docs/pkg/cdd/spec.md` are current.
 6. Post-mortem section added below recording any deviations from the phase ordering and why.
 
 ## What this plan is NOT
 
-This plan is not a re-litigation of whether `.lyric` files should exist or whether GDD/UDD is the right methodology. Those decisions are settled. This plan is the engineering path from where Lyre is today (native-parseable, thin docs) to where the methodology says it should be (DSL-framed, rich docs) with the minimum scope and the cleanest architecture available.
+This plan is not a re-litigation of whether `.lyric` files should exist or whether GDD/CDD is the right methodology. Those decisions are settled. This plan is the engineering path from where Lyre is today (native-parseable, thin docs) to where the methodology says it should be (DSL-framed, rich docs) with the minimum scope and the cleanest architecture available.
 
 ---
 
@@ -389,11 +389,11 @@ Recorded here so the sprint-runner instance (likely fresh-context me) has the
 canonical answers and doesn't re-litigate them.
 
 **Terminology cleanup** (revised 2026-06-19 evening): Bill standardized the
-methodology name on **Understanding-Driven Development (UDD)** and dropped
+methodology name on **Context-Driven Development (CDD)** and dropped
 all "Lyric Declaration" / "LDL" / "LDD" branding. The file format is just
 "the `.lyric` v2 format" (vs. v1, the obsolete native-parseable format).
-The methodology is UDD. The toolchain binary is `lyre`. The Go package that
-parses/writes `.lyric` files is `pkg/udd/`. Any prior session memory or doc
+The methodology is CDD. The toolchain binary is `lyre`. The Go package that
+parses/writes `.lyric` files is `pkg/cdd/`. Any prior session memory or doc
 referring to "LDL", "LDD", or "Lyric Declaration Document" is using
 superseded terminology.
 
@@ -407,16 +407,16 @@ order and per-field metadata. One-time breaking change paid in Phase 1, every
 extractor in Phase 3 consumes the new shape.
 
 **Decision 3 — `.lyric` format syntax**: Hewitt's call as the primary
-consumer. Will commit on day 1 of Phase 2 in `pkg/udd/spec.md`. Default
+consumer. Will commit on day 1 of Phase 2 in `pkg/cdd/spec.md`. Default
 choices going in: indent-significant (2 spaces), `#` for comments, `"""`
 heredocs on their own lines, decls in source order, top-level `module` with
 everything nested inside, recognized block heads (`field`, `method`, `func`,
 `doc`, `invariant`) with opaque verbatim text after the `:`.
 
-**Decision 4 — UDD enforcement extension**: needed (no existing skill or
+**Decision 4 — CDD enforcement extension**: needed (no existing skill or
 mechanism handles `.lyric`). The current `.forge` read-before-write is
 hardcoded in the CodeRhapsody Go server code (not a loadable skill — checked
-both global `~/.cr/skills/` and project skills, no UDD skill exists). Phase
+both global `~/.cr/skills/` and project skills, no CDD skill exists). Phase
 7.5 added below.
 
 **Decision 5 — Line numbers in `source:`**: KEEP. Bill correctly flagged
@@ -448,20 +448,20 @@ Phase 0 effort drops to ~30 min — write the two functions fresh against the
 documented behavior (`cmdFmt` = `lyre fmt` for plain `.lyric` files;
 `runUpdate` = legacy plain-`.lyric` update path).
 
-### 2026-06-19 — Phase 7.5 added: UDD enforcement extension
+### 2026-06-19 — Phase 7.5 added: CDD enforcement extension
 
 Slot this between Phases 7 and "Definition of done." Needed because the
 existing `.forge` read-before-write enforcement is hardcoded in the
 CodeRhapsody server (not a skill that can be edited in `~/.cr/skills/`).
 
-**Phase 7.5 — Extend UDD enforcement to `.lyric` files (3–4h)**
+**Phase 7.5 — Extend CDD enforcement to `.lyric` files (3–4h)**
 
 - Locate the existing `.forge` enforcement in the coderhapsody codebase
   (likely `pkg/agent/` or `pkg/tools/`). Search: `grep -rn '\.forge' pkg/`.
 - Add `.lyric` as an equivalent trigger file: if directory contains a
   `.lyric` file, that file must be read before `edit_file`, `write_file`,
   or `replace_lines` mutates anything in the directory.
-- Update the system-prompt UDD section to mention `.lyric` alongside
+- Update the system-prompt CDD section to mention `.lyric` alongside
   `.forge` (the section is generated from a template — find it, extend
   it, don't hand-edit per-session).
 - Test: in a temp dir with a `.lyric` file, attempt to edit a sibling
@@ -469,7 +469,7 @@ CodeRhapsody server (not a skill that can be edited in `~/.cr/skills/`).
 - Test the inverse: after reading the `.lyric`, edit succeeds.
 
 Without this, the moment I migrate `~/projects/lyric/src/checker/` to v2
-`.lyric` format, the UDD methodology stops being enforced for me in that
+`.lyric` format, the CDD methodology stops being enforced for me in that
 directory. So Phase 7.5 must land before Phase 7's backfill, or the
 methodology breaks in the middle of the sprint.
 
@@ -477,7 +477,7 @@ methodology breaks in the middle of the sprint.
 
 - Phase 0: ~30 min (was 1–2h, narrowed by git log)
 - Phases 1–7: unchanged
-- Phase 7.5 (UDD enforcement): 3–4h (new)
+- Phase 7.5 (CDD enforcement): 3–4h (new)
 
 Net: roughly cancels out. Still ~6–8 working days single-threaded.
 
@@ -528,7 +528,7 @@ New tests in `pkg/extract/extract_test.go`:
 
 ### 2026-06-19 — Phase 2 spec drafted and locked
 
-`pkg/udd/spec.md` written (256 lines). Six open syntax decisions submitted to
+`pkg/cdd/spec.md` written (256 lines). Six open syntax decisions submitted to
 Bill for sign-off; Bill returned "choose the grammar as you like, whatever
 feels natural to you is the right choice." Defaults are now locked in §12 of
 the spec:
@@ -544,33 +544,33 @@ the spec:
    and round-trips losslessly because the writer emits at consistent indent)
 
 In the same exchange Bill standardized the project's terminology on
-**Understanding-Driven Development (UDD)** — dropped all "LDL" / "LDD" /
+**Context-Driven Development (CDD)** — dropped all "LDL" / "LDD" /
 "Lyric Declaration Language" / "Lyric Declaration Document" branding from
-the methodology layer. Package renamed `pkg/ldd/` → `pkg/udd/`; the
-`understanding-driven-development.md` doc was also updated to fix
+the methodology layer. Package renamed `pkg/ldd/` → `pkg/cdd/`; the
+`context-driven-development.md` doc was also updated to fix
 long-standing drifts: `.ly` declaration files → `.lyric` files; `lyric
-verify/update/fmt` → `lyre verify/update/fmt`. The UDD doc is now the
+verify/update/fmt` → `lyre verify/update/fmt`. The CDD doc is now the
 single source of methodology truth and is listed as a mandatory pre-read
 at the top of this plan.
 
-Implementation order remains: `pkg/udd/parser.go`, `pkg/udd/writer.go`,
-spec-by-example tests in `pkg/udd/parser_test.go`, round-trip tests in
-`pkg/udd/writer_test.go` against `populatedPackage()` (added in Phase 1).
+Implementation order remains: `pkg/cdd/parser.go`, `pkg/cdd/writer.go`,
+spec-by-example tests in `pkg/cdd/parser_test.go`, round-trip tests in
+`pkg/cdd/writer_test.go` against `populatedPackage()` (added in Phase 1).
 
 ### 2026-06-19 — Phase 2 complete
 
 Writer-first approach worked. ~1 hour vs 2-3 day plan estimate. Files landed:
 
-- `pkg/udd/writer.go` (362 lines) — deterministic `Write(*PackageInfo) string`. Sorted decl emission by (file, line) when all positioned, else alphabetically. Blank line between every module-body block sibling. Heredoc emission at consistent indent for lossless round-trip. No trailing whitespace; exactly one final newline.
-- `pkg/udd/parser.go` (~620 lines) — line-based recursive descent. Tab/odd-indent detection. Closed-set first-token recognition. Heredoc body stripping by opener's own indent. `file:line` parsing into `Source` + `File` + `Line` fields. Errors carry `file:line: message`.
-- `pkg/udd/writer_test.go` (134 lines) — round-trip acceptance test, determinism (20 iterations), no-trailing-whitespace, exactly-one-final-newline. All pass.
-- `pkg/udd/parser_test.go` (316 lines, 26 tests) — spec-by-example for every construct + 8 negative tests (tab in indent, odd indent, unrecognized key, unterminated heredoc, no module, field `why:` rejected, heredoc under-indented, title missing colon). All pass.
+- `pkg/cdd/writer.go` (362 lines) — deterministic `Write(*PackageInfo) string`. Sorted decl emission by (file, line) when all positioned, else alphabetically. Blank line between every module-body block sibling. Heredoc emission at consistent indent for lossless round-trip. No trailing whitespace; exactly one final newline.
+- `pkg/cdd/parser.go` (~620 lines) — line-based recursive descent. Tab/odd-indent detection. Closed-set first-token recognition. Heredoc body stripping by opener's own indent. `file:line` parsing into `Source` + `File` + `Line` fields. Errors carry `file:line: message`.
+- `pkg/cdd/writer_test.go` (134 lines) — round-trip acceptance test, determinism (20 iterations), no-trailing-whitespace, exactly-one-final-newline. All pass.
+- `pkg/cdd/parser_test.go` (316 lines, 26 tests) — spec-by-example for every construct + 8 negative tests (tab in indent, odd indent, unrecognized key, unterminated heredoc, no module, field `why:` rejected, heredoc under-indented, title missing colon). All pass.
 
 **Spec amendments made during Phase 2** (spec is the contract, plan tracks deviations):
 
 1. **`typedef <name>: <underlying>` block added** to spec §3, §4, §9. The data model has `TypeDefInfo` but the original spec didn't surface it in the grammar. Added now so `TypeDefs` round-trip cleanly.
 
-2. **`FuncInfo.SignatureText` added** (extract.go) as the canonical opaque verbatim payload for method/func signatures, mirroring `FieldInfo.SignatureText`. Spec §4 updated to specify that `method`/`func` block heads carry the full signature INCLUDING the name (leading identifier is the map key; full rest-of-line is `SignatureText`). `FuncInfo.Params` / `Returns` / `Doc` are now flagged as extractor-internal — NOT round-tripped through `.lyric`. Documented at the top of `pkg/udd/doc.go` and on the `FuncInfo` struct.
+2. **`FuncInfo.SignatureText` added** (extract.go) as the canonical opaque verbatim payload for method/func signatures, mirroring `FieldInfo.SignatureText`. Spec §4 updated to specify that `method`/`func` block heads carry the full signature INCLUDING the name (leading identifier is the map key; full rest-of-line is `SignatureText`). `FuncInfo.Params` / `Returns` / `Doc` are now flagged as extractor-internal — NOT round-tripped through `.lyric`. Documented at the top of `pkg/cdd/doc.go` and on the `FuncInfo` struct.
 
 3. **`TypeDefInfo.Source` added** (extract.go), parallel to the other decl types. Required for round-trip when `File`/`Line` are populated.
 
@@ -580,7 +580,7 @@ Writer-first approach worked. ~1 hour vs 2-3 day plan estimate. Files landed:
 
 **Phase 1 `extract` tests still green**. Pre-existing TypeScript env failure (`cannot find typescript module`) unchanged — Phase 3b will unblock it.
 
-**Up next**: Phase 3a (Go extractor adaptation). Rewrite `pkg/extract/golang/ldd.go` to produce `*PackageInfo` populated with signature strings via `go/printer`, deleting source-comment-scraping logic (per core principle: UDD docs live in `.lyric`, never source). Then 3b/3c/3d.
+**Up next**: Phase 3a (Go extractor adaptation). Rewrite `pkg/extract/golang/ldd.go` to produce `*PackageInfo` populated with signature strings via `go/printer`, deleting source-comment-scraping logic (per core principle: CDD docs live in `.lyric`, never source). Then 3b/3c/3d.
 
 ### 2026-06-19 — Note on model capacity for the sprint
 
@@ -615,7 +615,7 @@ Files landed:
   Go-as-LDD path: `ParseLDDMeta`, `ParseLDDFile`, `GenerateLDDFile`,
   `UpdateGoLDD`, `VerifyGoLDD`) is gone — no migration shim, no
   back-compat. The legacy `//ldd:source` / `//ldd:why` directive scraping
-  is deleted per the core architectural principle (UDD docs live in
+  is deleted per the core architectural principle (CDD docs live in
   `.lyric`, never in source comments). The `// --- index ---` Go-comment
   block is gone — the `.lyric` v2 format has structure, not markers.
 - `pkg/extract/golang/ldd_test.go` (435 lines, full rewrite). New tests:
@@ -702,7 +702,7 @@ Files landed:
   `//ldd:source`/`//ldd:why` directive scraping) is gone. No migration
   shim, no back-compat. JSDoc extraction in `extract_api.js` is
   unchanged — it populates the legacy `Doc` field on PackageInfo decls
-  but is NOT round-tripped through `.lyric` (per the core principle, UDD
+  but is NOT round-tripped through `.lyric` (per the core principle, CDD
   prose lives in `.lyric` only; the extractor-internal `Doc` field is
   for future ad-hoc consumers).
 - `pkg/extract/typescript/typescript_test.go` (~490 lines, full rewrite).
@@ -823,7 +823,7 @@ structured JSON. Zero Lyric tooling changes. `lyric.stable` and
 `VerifyLyLDD`, `ParseLyLDDFile`, `ParseLyLDDMeta`, `ScanLyricFiles`,
 `writeLyLocation`, `buildLyFuncSig`, `splitAtIndexMarker`,
 `convertPackageJSON`, `convertFuncJSON`, and all `//ldd:source` /
-`//ldd:why` directive scraping. Per the top-of-plan rule, UDD docs
+`//ldd:why` directive scraping. Per the top-of-plan rule, CDD docs
 live in the `.lyric` file only — never in Lyric source comments.
 
 **Kept**: `findExtractBinary` (search order unchanged: LYRIC_HOME,
@@ -849,9 +849,9 @@ types (`lyPackageJSON`/`lyStructJSON`/`lyFuncJSON`/`lyParamJSON`/
 - **`mut` on non-self params**: preserved (`mut x: T`).
 
 **`udd.Write`/`udd.Parse` class-vs-struct discrimination check**:
-verified up front per plan step 4. `pkg/udd/writer.go` lines 203-205
+verified up front per plan step 4. `pkg/cdd/writer.go` lines 203-205
 emit `class` when `StructInfo.IsClass=true`, `struct` otherwise.
-`pkg/udd/parser.go` line 432-433 sets `IsClass=true` on `class` block
+`pkg/cdd/parser.go` line 432-433 sets `IsClass=true` on `class` block
 heads. No `pkg/udd` patch needed. Lyric is the first language to
 exercise both heads in one file — round-trip test
 `TestGenerateLy_RoundTripsThroughUDD` asserts both `Circle.IsClass`
@@ -910,7 +910,7 @@ extract/python, extract/typescript, parser, udd, verifier).
 **Up next**: Phase 3d (Python extractor, ½-day plan estimate, defer-
 able) → Phase 4 (lint) → Phase 5 (gen --rich) → Phase 6 (migration,
 including isLyLyric / plain-.lyric path cleanup deferred from this
-phase) → **Phase 7.5 (UDD enforcement extension in CR server — MUST
+phase) → **Phase 7.5 (CDD enforcement extension in CR server — MUST
 land before Phase 7)** → Phase 7 (docs + backfill `checker.ly.lyric`).
 
 
@@ -1022,7 +1022,7 @@ Doc blocks from native source comments as a starting point) →
 Phase 6 (migration — convert all in-tree `.lyric` files from v1 to
 v2, including the deferred `isLyLyric`/plain-`.lyric` cleanup from
 Phase 3c) → **Phase 7.5** (extend the CodeRhapsody server's `.forge`
-UDD-enforcement to `.lyric` files — MUST land before Phase 7 so the
+CDD-enforcement to `.lyric` files — MUST land before Phase 7 so the
 backfill operates under enforcement) → Phase 7 (docs + backfill
 `checker.ly.lyric` for the Lyric checker).
 
@@ -1106,7 +1106,7 @@ single-digit-hours regime. `go test ./...` 100% green.
 ### Up next
 
 Phase 5 (`lyre gen --rich`) → Phase 6 (v1→v2 migration; pick up the
-deferred `isLyLyric` / plain-`.lyric` cleanup) → **Phase 7.5** (UDD
+deferred `isLyLyric` / plain-`.lyric` cleanup) → **Phase 7.5** (CDD
 enforcement extension in CR server — MUST land before Phase 7) → Phase 7
 (docs + backfill `checker.ly.lyric`).
 
@@ -1151,7 +1151,7 @@ well under the single-digit-hours regime.
 ### Up next
 
 Phase 6 (v1→v2 migration; pick up the deferred `isLyLyric` /
-plain-`.lyric` cleanup) → **Phase 7.5** (UDD enforcement extension in
+plain-`.lyric` cleanup) → **Phase 7.5** (CDD enforcement extension in
 CR server — MUST land before Phase 7) → Phase 7 (docs + backfill
 `checker.ly.lyric`).
 
@@ -1204,7 +1204,7 @@ collapses cleanly:
 
 **`lyre fmt`** stub remains (`cmd/lyre/main.go: cmdFmt`). The v2
 `.lyric` format already round-trips losslessly through
-`pkg/udd/Parse → Write`; a real `lyre fmt` implementation is a tiny
+`pkg/cdd/Parse → Write`; a real `lyre fmt` implementation is a tiny
 follow-up that loops the udd parse/write pipeline over its inputs.
 Not in Phase 6's scope; logged.
 
@@ -1216,7 +1216,7 @@ will exercise that path.
 
 ### Up next
 
-Phase 7.5 (UDD enforcement extension in CR server — MUST land before
+Phase 7.5 (CDD enforcement extension in CR server — MUST land before
 Phase 7) → Phase 7 (docs + backfill `checker.ly.lyric`).
 
 ### 2026-06-19 — Phase 7.5 complete
@@ -1254,8 +1254,8 @@ would be a behaviour change beyond the spec; the simpler equivalence
 is what the Phase 7.5 amendment asked for. Future refinement is one
 small follow-up if desired.
 
-**Build / tests**: `go build ./pkg/...` clean. All 8 UDD tests pass
-(`go test ./pkg/tools/ -run UDD -v`). One pre-existing `TestExecuteListSkills`
+**Build / tests**: `go build ./pkg/...` clean. All 8 CDD tests pass
+(`go test ./pkg/tools/ -run CDD -v`). One pre-existing `TestExecuteListSkills`
 failure on `pkg/tools` is environment-dependent (expects 0 global skills,
 finds 19 installed in the dev tree) — confirmed identical failure on
 `main` without the patch.
@@ -1319,15 +1319,15 @@ port" target from the handoff.
 CLI takes only file arguments. Not in Phase 7 scope, but a future
 QoL improvement worth a TODO.
 
-**Note on Phase 7 step 1 (`pkg/udd/spec.md`)**: already exists from Phase 2,
+**Note on Phase 7 step 1 (`pkg/cdd/spec.md`)**: already exists from Phase 2,
 re-read clean. No update needed — the spec is current.
 
-**Note on Phase 7 step 2 (UDD methodology doc update)**: the handoff cites
+**Note on Phase 7 step 2 (CDD methodology doc update)**: the handoff cites
 `checker.forge` as the rich-content reference; in practice no `.forge`
 file exists in `~/projects/lyric/src/checker/` — the backfilled
 `checker.ly.lyric` IS the reference example. Methodology doc
-`~/projects/lyric/cr/docs/understanding-driven-development.md` was already
-updated to reference `.lyric`/`lyre`/UDD terminology in earlier phases of
+`~/projects/lyric/cr/docs/context-driven-development.md` was already
+updated to reference `.lyric`/`lyre`/CDD terminology in earlier phases of
 this sprint; no further drift detected.
 
 **Docs scan**: `grep -rni 'LDD\|LDL\|GDD\|grok-driven\|verifier\|lyric verify\|lyric update' README.md cr/docs/` in `~/projects/lyre/` returns ONLY this plan file (historical amendment context, appropriately preserved). No drift in user-facing docs. Lyre has no README.md and only this plan in cr/docs/ — clean.

@@ -6,7 +6,7 @@
 // Because populatedPackage is unexported (package extract), this file
 // constructs an equivalent fixture locally.
 
-package udd
+package cdd
 
 import (
 	"reflect"

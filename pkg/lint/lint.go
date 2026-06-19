@@ -1,7 +1,7 @@
 // Package lint implements `lyre lint`: a language-agnostic linter that
-// inspects a parsed *extract.PackageInfo produced by pkg/udd and reports
+// inspects a parsed *extract.PackageInfo produced by pkg/cdd and reports
 // recoverable quality issues distinct from the fatal syntactic errors
-// raised by udd.Parse (spec §10).
+// raised by cdd.Parse (spec §10).
 //
 // Lint is intentionally separate from pkg/verifier and the per-language
 // VerifyXxx functions: those compare a .lyric file against native source

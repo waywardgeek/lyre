@@ -11,7 +11,7 @@ import (
 
 	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/extract/typescript"
-	"github.com/waywardgeek/lyre/pkg/udd"
+	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // sampleSource is a simple TypeScript module used as test input.
@@ -179,7 +179,7 @@ func TestExtractTs_SkipsTestAndSpecFiles(t *testing.T) {
 	}
 }
 
-// --- GenerateTs + round-trip through udd.Parse -----------------------------
+// --- GenerateTs + round-trip through cdd.Parse -----------------------------
 
 func TestGenerateTs_OutputFormat(t *testing.T) {
 	dir := writeTempTs(t, sampleSource)
@@ -212,15 +212,15 @@ func TestGenerateTs_OutputFormat(t *testing.T) {
 	}
 }
 
-func TestGenerateTs_RoundTripsThroughUDD(t *testing.T) {
+func TestGenerateTs_RoundTripsThroughCDD(t *testing.T) {
 	dir := writeTempTs(t, sampleSource)
 	_, content, err := typescript.GenerateTs(dir)
 	if err != nil {
 		t.Fatalf("GenerateTs: %v", err)
 	}
-	p, err := udd.Parse(content, "shapes.ts.lyric")
+	p, err := cdd.Parse(content, "shapes.ts.lyric")
 	if err != nil {
-		t.Fatalf("udd.Parse: %v\n--- content ---\n%s", err, content)
+		t.Fatalf("cdd.Parse: %v\n--- content ---\n%s", err, content)
 	}
 	if _, ok := p.Structs["Circle"]; !ok {
 		t.Error("Circle missing after round-trip")
@@ -386,7 +386,7 @@ func TestUpdateTs_AlreadyUpToDate(t *testing.T) {
 }
 
 // TestUpdateTs_PreservesHumanProse uses the cleaner approach: construct a
-// PackageInfo with the prose set, write it via udd.Write to seed the
+// PackageInfo with the prose set, write it via cdd.Write to seed the
 // fixture, then run UpdateTs. No fragile string-splicing.
 func TestUpdateTs_PreservesHumanProse(t *testing.T) {
 	dir := writeTempTs(t, sampleSource)
@@ -408,8 +408,8 @@ func TestUpdateTs_PreservesHumanProse(t *testing.T) {
 			}
 		}
 	}
-	// Step 3: write via udd.Write — clean, no string splicing.
-	if err := os.WriteFile(outPath, []byte(udd.Write(p)), 0644); err != nil {
+	// Step 3: write via cdd.Write — clean, no string splicing.
+	if err := os.WriteFile(outPath, []byte(cdd.Write(p)), 0644); err != nil {
 		t.Fatalf("writing seed .ts.lyric: %v", err)
 	}
 
@@ -451,9 +451,9 @@ func TestUpdateTs_RefreshesPositionsAndSource(t *testing.T) {
 	}
 
 	raw, _ := os.ReadFile(outPath)
-	p, err := udd.Parse(string(raw), outPath)
+	p, err := cdd.Parse(string(raw), outPath)
 	if err != nil {
-		t.Fatalf("udd.Parse: %v", err)
+		t.Fatalf("cdd.Parse: %v", err)
 	}
 	nc, ok := p.Functions["newCircle"]
 	if !ok {

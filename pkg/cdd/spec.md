@@ -6,7 +6,7 @@
 
 ## 1. Purpose
 
-The `.lyric` file is the persistent artifact of **Understanding-Driven Development** (UDD). One `.lyric` file per (directory, language) pair captures the eight rich-doc sections needed for parity with the legacy `.forge` format:
+The `.lyric` file is the persistent artifact of **Context-Driven Development** (CDD). One `.lyric` file per (directory, language) pair captures the eight rich-doc sections needed for parity with the legacy `.forge` format:
 
 1. Module-level `why:` — one-line purpose
 2. `doc "Title":` blocks — named narrative sections (e.g. "Architecture")
@@ -19,7 +19,7 @@ The `.lyric` file is the persistent artifact of **Understanding-Driven Developme
 
 **Signature payloads** (field types, method signatures, function signatures) are **verbatim native-language text** treated as opaque strings. The Lyre toolchain does not parse them. Verification is whitespace-normalized string equality against the per-language extractor's output.
 
-**Prerequisite reading**: anyone modifying `.lyric` files or extending this format must first read `~/projects/lyric/cr/docs/understanding-driven-development.md`. It defines the methodology this format implements.
+**Prerequisite reading**: anyone modifying `.lyric` files or extending this format must first read `~/projects/lyric/cr/docs/context-driven-development.md`. It defines the methodology this format implements.
 
 The format inherits its outer framing — the *file layer* — from the original Grok-Driven Development design (`~/projects/coderhapsody/cr/docs/grok-driven-development.md`, `grok-language.md`). The full Grok programming language is NOT inherited: payloads are opaque native text, not typed Grok signatures.
 
@@ -212,7 +212,7 @@ module checker
 
 ## 9. Deterministic writer rules
 
-The writer in `pkg/udd/writer.go` follows these rules so that `Parse(Write(p))` is structurally equal to `p` for any well-formed `PackageInfo`:
+The writer in `pkg/cdd/writer.go` follows these rules so that `Parse(Write(p))` is structurally equal to `p` for any well-formed `PackageInfo`:
 
 - **Indent**: exactly 2 spaces per level.
 - **Key ordering within the module-body**:
@@ -255,4 +255,4 @@ These six points were called out for sign-off. Per Bill's "use your judgment" ca
 
 ---
 
-*Implementation order: `pkg/udd/parser.go`, `pkg/udd/writer.go`, then `parser_test.go` (spec-by-example) and `writer_test.go` (round-trip against `populatedPackage()` fixture in `pkg/extract/extract_test.go`).*
+*Implementation order: `pkg/cdd/parser.go`, `pkg/cdd/writer.go`, then `parser_test.go` (spec-by-example) and `writer_test.go` (round-trip against `populatedPackage()` fixture in `pkg/extract/extract_test.go`).*

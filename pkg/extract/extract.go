@@ -3,7 +3,7 @@
 // PackageInfo describing the exported declarations.
 //
 // As of Phase 1 of the rich-doc upgrade (see cr/docs/rich-doc-upgrade-plan.md),
-// PackageInfo carries the eight rich-doc sections needed for UDD parity with
+// PackageInfo carries the eight rich-doc sections needed for CDD parity with
 // the legacy .forge format: module-level why, named doc blocks, named
 // invariant blocks (with procedural/verified-by metadata), per-decl why,
 // per-field doc, and source location bindings. Signatures themselves are
