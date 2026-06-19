@@ -912,3 +912,116 @@ able) → Phase 4 (lint) → Phase 5 (gen --rich) → Phase 6 (migration,
 including isLyLyric / plain-.lyric path cleanup deferred from this
 phase) → **Phase 7.5 (UDD enforcement extension in CR server — MUST
 land before Phase 7)** → Phase 7 (docs + backfill `checker.ly.lyric`).
+
+
+## 2026-06-19 — Phase 3d complete (Python extractor)
+
+**Time**: ~30min vs ½-day plan estimate. Same shape as Phase 3a/3b/3c —
+template mature enough that this was largely a copy-and-substitute pass.
+
+### Landed
+
+- `pkg/extract/python/python.go` — full rewrite. New v2 surface:
+  `ExtractPy / GeneratePy / UpdatePy / VerifyPy → *PackageInfo`.
+  Mirrors Phase 3c (Lyric) almost line-for-line. Kept `//go:embed
+  extract_api.py` + `runExtract` temp-file pattern — Python's script
+  is pure stdlib so no need to switch to `runtime.Caller` (TS's
+  reason was npm's sibling-node_modules requirement which Python
+  lacks).
+- `pkg/extract/python/python_test.go` — green-field rewrite. 16 tests
+  covering Extract / Generate (output format + udd round-trip) /
+  Verify (clean, missing function, undocumented export, field type
+  mismatch) / Update (adds, idempotent, preserves human prose,
+  refreshes positions, multi-file). All 16 pass first run (after one
+  fix-up — see below). `requireExtractor` skips cleanly if `python3`
+  is missing.
+- `pkg/extract/python/extract_api.py` — one small surgical edit: add
+  `file` + `line` to per-method JSON output (one block in the class
+  walk: `minfo = func_info(item); minfo["file"] = …; minfo["line"] =
+  item.lineno`). Previously methods had no per-method position info,
+  only top-level functions did. The fix takes 3 lines and brings
+  Python parity with Lyric/TS/Go (which all emit per-method source).
+  Bill gave explicit go-ahead to edit this file mid-session.
+- `cmd/lyre/main.go` — 3 callsite renames: `python.VerifyPyLDD →
+  VerifyPy`, `python.UpdatePyLDD → UpdatePy`, `python.GeneratePyLDDFile
+  → GeneratePy`. Mirrors Phase 3c's Lyric renames.
+
+### Design decisions worth carrying forward
+
+1. **Per-file extractor, multi-file merge in Go.** `extract_api.py`
+   accepts ONE source file per invocation (unlike Lyric's batch
+   mode). The Go wrapper writes the embedded script to a tempfile
+   once per `ExtractPy` call, then loops files and merges per-file
+   JSON via the same `mergeJSONInto` shape as Phase 3c.
+
+2. **All Python "classes" → IsClass=true.** Python has no
+   value-vs-reference type distinction; every `class Foo` becomes
+   `extract.StructInfo` with `IsClass=true`, which the udd writer
+   emits as `class` (not `struct`). Phase 3c verified the
+   writer/parser discriminates correctly; no udd patch needed.
+
+3. **Method SignatureText re-adds `self`.** `extract_api.py`'s
+   `func_info()` strips `self`/`cls` from the params list (mirrors
+   Lyric's `extract_api`). Go-side `pyFuncSigText` re-prepends `self`
+   for methods so the canonical form matches Lyric: `name(self, p: T)
+   -> R`. classmethods (whose `cls` was stripped) come out as `name(self,
+   ...)` — a minor wart, acceptable for now since classmethods are
+   rare in API surface code.
+
+4. **Protocol-as-interface.** `extract_api.py` already does this
+   classification: `class Foo(Protocol):` lands in JSON
+   `"interfaces"`, plain classes in `"structs"`. Go side trusts the
+   classification; tests verify (`Drawable(Protocol)` → interface).
+
+5. **TypeAlias detection.** `extract_api.py` handles both `X = int`
+   (simple assignment) and `X: TypeAlias = int` (PEP 613). Both end
+   up in `"typedefs"`. Test verifies `Color: TypeAlias = str` round-
+   trips as `typedef Color: str`.
+
+6. **Skip rules.** Match Phase 3c: `test_*.py`, `*_test.py`, plus
+   underscore-prefixed files (`_internal.py`, `__init__.py`,
+   `__main__.py`). The single underscore-prefix rule covers all three
+   Python-convention-private cases.
+
+### Test fixture pattern (kept clean)
+
+`TestUpdatePy_PreservesHumanProse` uses the cleaner approach
+established in Phase 3b/3c: construct a `PackageInfo` via `ExtractPy`,
+set prose fields directly (`ModuleWhy`, decl `Why`, field `Doc`),
+write via `udd.Write` to seed disk, then run `UpdatePy`. No fragile
+string-splicing.
+
+### Dogfood
+
+- Synthetic `/tmp/pydog/geom/shapes.py` (Class+method, Class+fields,
+  Protocol, TypeAlias, top-level func).
+- `lyre gen /tmp/pydog/geom/` → `geom.py.lyric` with all classes,
+  interface, typedef, function, methods, and per-method source lines.
+- `lyre verify geom.py.lyric` → **0 errors, 0 warnings.**
+- Removed `/tmp/pydog/` after verification (no commits to other
+  repos).
+
+### Build / test status
+
+- `go build ./...` — clean.
+- `go test ./pkg/extract/python/...` — 16/16 pass.
+- `go test ./...` — 100% green across all packages.
+
+### Velocity calibration update
+
+3a (Go) ~30min; 3b (TS) ~1h; 3c (Lyric) ~1h; 3d (Python) ~30min. All
+were ½-day plan estimates. The pattern's mature; future per-language
+work can quote single-digit hours, not days.
+
+### Up next
+
+Phase 4 (lint — `lyre lint` warns on TODO placeholders, missing
+`why:`, missing `source:`, references to nonexistent tests) →
+Phase 5 (`lyre gen --rich` — synthesize plausible TODO-marked Why /
+Doc blocks from native source comments as a starting point) →
+Phase 6 (migration — convert all in-tree `.lyric` files from v1 to
+v2, including the deferred `isLyLyric`/plain-`.lyric` cleanup from
+Phase 3c) → **Phase 7.5** (extend the CodeRhapsody server's `.forge`
+UDD-enforcement to `.lyric` files — MUST land before Phase 7 so the
+backfill operates under enforcement) → Phase 7 (docs + backfill
+`checker.ly.lyric` for the Lyric checker).

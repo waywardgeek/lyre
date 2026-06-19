@@ -222,7 +222,10 @@ def extract_from_source(source_text, filename):
                     if not is_public(mname):
                         continue
                     # Strip decorators for naming (keep the method)
-                    methods[mname] = func_info(item)
+                    minfo = func_info(item)
+                    minfo["file"] = os.path.basename(filename)
+                    minfo["line"] = item.lineno
+                    methods[mname] = minfo
 
             if is_protocol:
                 result["interfaces"][class_name] = {"methods": methods, "doc": get_docstring(node), "file": os.path.basename(filename), "line": node.lineno}

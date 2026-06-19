@@ -1,7 +1,38 @@
-// Package python provides Python-syntax LDD file generation and parsing.
-// A .py.lyric file is a Python stub file (.pyi style) with #ldd: metadata
-// comments at the top, used as a living understanding document for a Python
-// package.
+// Package python's `.py.lyric` v2 entry points: ExtractPy, GeneratePy,
+// UpdatePy, VerifyPy. The `.py.lyric` file is the persistent UDD artifact
+// for a Python directory — a small declarative DSL parsed/written by
+// pkg/udd, whose payload lines (field types, method signatures, function
+// signatures) are verbatim Python text treated as opaque strings.
+//
+// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// lives in the .lyric file ONLY, never as `#ldd:source`, `#ldd:why`, or
+// other smuggled directives in Python source. Extractors are
+// signatures-only. The legacy ParsePyLDDFile / // --- index --- layout
+// and #ldd: scraping are gone.
+//
+// Extraction pipeline:
+//   - The embedded extract_api.py script (Python 3.8+ stdlib only,
+//     written to a tempfile) parses one .py file per invocation and
+//     emits a single JSON blob.
+//   - This package walks the directory, invokes the script per-file,
+//     merges results into a *PackageInfo whose SignatureText fields are
+//     populated for round-trip through the .lyric v2 format.
+//   - Field SignatureText is type-only (e.g. "int", "list[str]",
+//     "Optional[Token]"). Method and function SignatureText is
+//     "Name(self, p: T) -> R" for methods, "Name(p: T) -> R" for
+//     top-level — no `def` keyword, no decorators, no trailing colon.
+//     Methods always include `self` as the leading parameter; the
+//     extract_api.py script strips self/cls from the params list, so
+//     we re-add it here (mirroring Phase 3c's Lyric handling).
+//   - All Python "classes" become extract.StructInfo with IsClass=true
+//     — Python has no value-vs-reference type distinction. Classes
+//     deriving from `Protocol` are classified as interfaces.
+//
+// Notably KEEP the //go:embed extract_api.py + temp-file approach
+// (rather than Phase 3b's runtime.Caller switch). TS needed runtime
+// path because npm wants a sibling node_modules; Python's script is
+// pure stdlib and has no such constraint, so the embed keeps the
+// binary self-contained.
 package python
 
 import (
@@ -15,20 +46,21 @@ import (
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
+	"github.com/waywardgeek/lyre/pkg/udd"
 )
 
 //go:embed extract_api.py
 var extractScript []byte
 
-// --- Severity / Finding / VerifyResult ---
+// --- VerifyResult / Finding / Severity ------------------------------------
 
 // Severity levels for verification findings.
 type Severity int
 
 const (
-	SevError   Severity = iota
-	SevWarning          // nolint:deadcode
-	SevInfo             // nolint:deadcode
+	SevError Severity = iota
+	SevWarning
+	SevInfo
 )
 
 func (s Severity) String() string {
@@ -43,7 +75,7 @@ func (s Severity) String() string {
 	return "UNKNOWN"
 }
 
-// Finding is a single verification result.
+// Finding is a single verification report.
 type Finding struct {
 	Severity Severity
 	File     string
@@ -73,7 +105,7 @@ func (r *VerifyResult) add(sev Severity, file, source, msg string) {
 	})
 }
 
-// ErrorCount returns the number of error-level findings.
+// ErrorCount returns the number of SevError findings.
 func (r *VerifyResult) ErrorCount() int {
 	n := 0
 	for _, f := range r.Findings {
@@ -84,27 +116,27 @@ func (r *VerifyResult) ErrorCount() int {
 	return n
 }
 
-// --- JSON schema for Python extractor output ---
+// --- JSON shape from extract_api.py ---------------------------------------
 
 type pyPackageJSON struct {
-	Name       string                    `json:"name"`
-	Structs    map[string]pyStructJSON   `json:"structs"`
-	Interfaces map[string]pyIfaceJSON    `json:"interfaces"`
-	Functions  map[string]pyFuncJSON     `json:"functions"`
-	TypeDefs   map[string]pyTypeDefJSON  `json:"typedefs"`
+	Name       string                   `json:"name"`
+	Structs    map[string]pyStructJSON  `json:"structs"`
+	Interfaces map[string]pyIfaceJSON   `json:"interfaces"`
+	Functions  map[string]pyFuncJSON    `json:"functions"`
+	TypeDefs   map[string]pyTypeDefJSON `json:"typedefs"`
 }
 
 type pyStructJSON struct {
-	Fields  map[string]string         `json:"fields"`
-	Methods map[string]pyFuncJSON     `json:"methods"`
-	Doc     string                    `json:"doc"`
-	File    string                    `json:"file"`
-	Line    int                       `json:"line"`
+	Fields  map[string]string     `json:"fields"`
+	Methods map[string]pyFuncJSON `json:"methods"`
+	Doc     string                `json:"doc"` // ignored — UDD doc lives in .lyric only
+	File    string                `json:"file"`
+	Line    int                   `json:"line"`
 }
 
 type pyIfaceJSON struct {
 	Methods map[string]pyFuncJSON `json:"methods"`
-	Doc     string                `json:"doc"`
+	Doc     string                `json:"doc"` // ignored
 	File    string                `json:"file"`
 	Line    int                   `json:"line"`
 }
@@ -112,7 +144,7 @@ type pyIfaceJSON struct {
 type pyFuncJSON struct {
 	Params  []pyParamJSON `json:"params"`
 	Returns []string      `json:"returns"`
-	Doc     string        `json:"doc"`
+	Doc     string        `json:"doc"` // ignored
 	File    string        `json:"file"`
 	Line    int           `json:"line"`
 }
@@ -128,664 +160,570 @@ type pyTypeDefJSON struct {
 	Line       int    `json:"line"`
 }
 
-// --- Script execution ---
+// --- Script invocation ----------------------------------------------------
 
-// runExtractScript runs extract_api.py against the given file path and returns
-// the parsed JSON output as a PackageInfo.
-func runExtractScript(srcPath string) (*extract.PackageInfo, error) {
-	// Write the embedded script to a temp file.
+// writeScriptTemp writes the embedded extract_api.py to a tempfile and
+// returns its path. Caller removes it.
+func writeScriptTemp() (string, error) {
 	tmp, err := os.CreateTemp("", "lyre-extract-*.py")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp script: %w", err)
+		return "", fmt.Errorf("creating temp script: %w", err)
 	}
-	defer os.Remove(tmp.Name())
-
 	if _, err := tmp.Write(extractScript); err != nil {
 		tmp.Close()
-		return nil, fmt.Errorf("writing temp script: %w", err)
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("writing temp script: %w", err)
 	}
 	tmp.Close()
-
-	out, err := exec.Command("python3", tmp.Name(), srcPath).Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("extract_api.py failed: %s", strings.TrimSpace(string(ee.Stderr)))
-		}
-		return nil, fmt.Errorf("running python3: %w", err)
-	}
-
-	var raw pyPackageJSON
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parsing extractor output: %w", err)
-	}
-
-	return convertPackageJSON(&raw), nil
+	return tmp.Name(), nil
 }
 
-// convertPackageJSON converts the raw JSON output into a PackageInfo.
-func convertPackageJSON(raw *pyPackageJSON) *extract.PackageInfo {
-	info := extract.NewPackageInfo(raw.Name)
+// runExtract invokes extract_api.py against a single .py source file and
+// returns the decoded JSON. The extractor accepts ONE file per invocation
+// (unlike Lyric's batch mode), so callers loop and merge.
+func runExtract(scriptPath, srcPath string) (*pyPackageJSON, error) {
+	out, err := exec.Command("python3", scriptPath, srcPath).Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("extract_api.py failed on %s: %s", srcPath, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("running python3 on %s: %w", srcPath, err)
+	}
+	var raw pyPackageJSON
+	if err := json.Unmarshal(out, &raw); err != nil {
+		preview := out
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("parsing extractor output for %s: %w\nraw: %s", srcPath, err, string(preview))
+	}
+	return &raw, nil
+}
 
-	for name, s := range raw.Structs {
+// --- ExtractPy ------------------------------------------------------------
+
+// ExtractPy parses every public .py file in srcDir and returns the public
+// API as a *PackageInfo whose SignatureText fields are populated for
+// round-trip through the .lyric v2 format.
+//
+// Skips: test_*.py, *_test.py, _*.py (underscore-prefixed private convention,
+// which also covers __init__.py / __main__.py).
+//
+// Module name = dir basename, matching Phase 3a/3b/3c precedent.
+func ExtractPy(srcDir string) (*extract.PackageInfo, error) {
+	absDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return nil, err
+	}
+	files, err := scanPyFiles(absDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .py files found in %s", srcDir)
+	}
+
+	scriptPath, err := writeScriptTemp()
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(scriptPath)
+
+	p := extract.NewPackageInfo(filepath.Base(absDir))
+	p.ModuleSource = files
+	for _, f := range files {
+		raw, err := runExtract(scriptPath, filepath.Join(absDir, f))
+		if err != nil {
+			return nil, err
+		}
+		mergeJSONInto(p, raw)
+	}
+	return p, nil
+}
+
+// scanPyFiles returns sorted non-test, non-private .py filenames.
+func scanPyFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".py") {
+			continue
+		}
+		// Skip private (underscore-prefixed: covers __init__.py, __main__.py, _internal.py)
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		// Skip tests
+		if strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test.py") {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// mergeJSONInto folds one file's JSON into the accumulating PackageInfo.
+// Per-file JSON has its own pkg "name" field (file basename without .py);
+// we keep the PackageInfo.Name set by the caller (directory basename).
+func mergeJSONInto(p *extract.PackageInfo, raw *pyPackageJSON) {
+	for name, cls := range raw.Structs {
 		si := extract.NewStructInfo()
-		si.Doc = s.Doc
-		si.File = s.File
-		si.Line = s.Line
-		for fn, ft := range s.Fields {
-			si.SetField(fn, ft)
+		si.IsClass = true // Python has no value-vs-reference distinction
+		si.File = filepath.Base(cls.File)
+		si.Line = cls.Line
+		if si.File != "" && si.Line > 0 {
+			si.Source = fmt.Sprintf("%s:%d", si.File, si.Line)
 		}
-		for mn, mf := range s.Methods {
-			si.Methods[mn] = convertFuncJSON(mf)
+		for _, fname := range sortedStringMapKeys(cls.Fields) {
+			si.SetField(fname, cls.Fields[fname])
 		}
-		info.Structs[name] = si
+		for _, mname := range sortedFuncJSONKeys(cls.Methods) {
+			mf := cls.Methods[mname]
+			si.Methods[mname] = funcInfoFromJSON(mname, mf, true)
+		}
+		p.Structs[name] = si
 	}
 
 	for name, iface := range raw.Interfaces {
 		ii := extract.NewInterfaceInfo()
-		ii.Doc = iface.Doc
-		ii.File = iface.File
+		ii.File = filepath.Base(iface.File)
 		ii.Line = iface.Line
-		for mn, mf := range iface.Methods {
-			ii.Methods[mn] = convertFuncJSON(mf)
+		if ii.File != "" && ii.Line > 0 {
+			ii.Source = fmt.Sprintf("%s:%d", ii.File, ii.Line)
 		}
-		info.Interfaces[name] = ii
+		for _, mname := range sortedFuncJSONKeys(iface.Methods) {
+			mf := iface.Methods[mname]
+			ii.Methods[mname] = funcInfoFromJSON(mname, mf, true)
+		}
+		p.Interfaces[name] = ii
 	}
 
 	for name, fn := range raw.Functions {
-		info.Functions[name] = convertFuncJSON(fn)
+		p.Functions[name] = funcInfoFromJSON(name, fn, false)
 	}
 
 	for name, td := range raw.TypeDefs {
-		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: td.Underlying, File: td.File, Line: td.Line}
+		ti := &extract.TypeDefInfo{
+			Underlying: td.Underlying,
+			File:       filepath.Base(td.File),
+			Line:       td.Line,
+		}
+		if ti.File != "" && ti.Line > 0 {
+			ti.Source = fmt.Sprintf("%s:%d", ti.File, ti.Line)
+		}
+		p.TypeDefs[name] = ti
 	}
-
-	return info
 }
 
-func convertFuncJSON(fn pyFuncJSON) *extract.FuncInfo {
-	fi := &extract.FuncInfo{Doc: fn.Doc, File: fn.File, Line: fn.Line}
-	for _, p := range fn.Params {
-		fi.Params = append(fi.Params, extract.ParamInfo{Name: p.Name, Type: p.Type})
+// funcInfoFromJSON builds a *FuncInfo with canonical Python SignatureText.
+// Method form: "Name(self, p: T) -> R". Function form: "Name(p: T) -> R".
+// Empty return list omits the `-> R` clause.
+//
+// extract_api.py strips self/cls from the params list (see its func_info()
+// implementation, which starts at index 1 when the first arg is self/cls).
+// We re-add `self` for methods to match the Lyric/extract_api convention.
+func funcInfoFromJSON(name string, fn pyFuncJSON, isMethod bool) *extract.FuncInfo {
+	fi := &extract.FuncInfo{
+		SignatureText: pyFuncSigText(name, fn, isMethod),
+		File:          filepath.Base(fn.File),
+		Line:          fn.Line,
 	}
-	fi.Returns = fn.Returns
+	if fi.File != "" && fi.Line > 0 {
+		fi.Source = fmt.Sprintf("%s:%d", fi.File, fi.Line)
+	}
 	return fi
 }
 
-// --- Metadata parsing ---
-
-// ParsePyLDDMeta extracts #ldd: metadata from the text of a .py.lyric file.
-func ParsePyLDDMeta(src string) *extract.LDDMeta {
-	meta := &extract.LDDMeta{Lang: "python"}
-	for _, line := range strings.Split(src, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#ldd:source ") {
-			sources := strings.TrimPrefix(line, "#ldd:source ")
-			for _, s := range strings.Split(sources, ",") {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					meta.Source = append(meta.Source, s)
-				}
-			}
-		} else if strings.HasPrefix(line, "#ldd:why ") {
-			meta.Why = strings.Trim(strings.TrimPrefix(line, "#ldd:why "), "\"")
-		}
+func pyFuncSigText(name string, fn pyFuncJSON, isMethod bool) string {
+	parts := make([]string, 0, len(fn.Params)+1)
+	if isMethod {
+		parts = append(parts, "self")
 	}
-	return meta
-}
-
-// --- Parse LDD file ---
-
-// ParsePyLDDFile parses a .py.lyric understanding file and returns both the
-// declared API and the LDD metadata.
-func ParsePyLDDFile(path string) (*extract.PackageInfo, *extract.LDDMeta, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	meta := ParsePyLDDMeta(string(src))
-
-	// Run the extraction script on the stub file itself — stub files are valid
-	// Python stub syntax and ast.parse handles them fine.
-	info, err := runExtractScript(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-
-	return info, meta, nil
-}
-
-// --- Generate LDD file ---
-
-// ScanPythonFiles returns the .py filenames in absDir (base names only),
-// excluding test files and __init__.py.
-func ScanPythonFiles(absDir string) ([]string, error) {
-	entries, err := os.ReadDir(absDir)
-	if err != nil {
-		return nil, err
-	}
-	var files []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".py") {
-			continue
-		}
-		// Skip test files and __init__.py
-		if strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test.py") || name == "__init__.py" {
-			continue
-		}
-		files = append(files, name)
-	}
-	sort.Strings(files)
-	return files, nil
-}
-
-// buildPyFuncSig builds a Python-stub-syntax method signature.
-// If recv is non-empty it's the receiver name (e.g. "self") prepended.
-func buildPyFuncSig(name string, recv string, fi *extract.FuncInfo) string {
-	var b strings.Builder
-	b.WriteString("def ")
-	b.WriteString(name)
-	b.WriteString("(")
-	first := true
-	if recv != "" {
-		b.WriteString(recv)
-		first = false
-	}
-	for _, p := range fi.Params {
-		if !first {
-			b.WriteString(", ")
-		}
-		first = false
+	for _, p := range fn.Params {
+		var b strings.Builder
 		b.WriteString(p.Name)
-		if p.Type != "" && p.Type != "Any" {
+		if p.Type != "" {
 			b.WriteString(": ")
 			b.WriteString(p.Type)
 		}
+		parts = append(parts, b.String())
 	}
-	b.WriteString(")")
-	if len(fi.Returns) > 0 {
-		b.WriteString(" -> ")
-		b.WriteString(strings.Join(fi.Returns, ", "))
+	sig := fmt.Sprintf("%s(%s)", name, strings.Join(parts, ", "))
+	if len(fn.Returns) == 0 || (len(fn.Returns) == 1 && fn.Returns[0] == "") {
+		return sig
 	}
-	b.WriteString(": ...")
-	return b.String()
+	if len(fn.Returns) == 1 {
+		return sig + " -> " + fn.Returns[0]
+	}
+	return sig + " -> (" + strings.Join(fn.Returns, ", ") + ")"
 }
 
-// GeneratePyLDDFile produces a .py.lyric understanding file for a Python package.
-// Returns the output path and the file content.
-func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
-	absDir, err := filepath.Abs(pkgDir)
+// --- GeneratePy / UpdatePy / VerifyPy -------------------------------------
+
+// GeneratePy scaffolds a fresh <dirname>.py.lyric file for srcDir. It does
+// NOT write to disk; the caller writes outPath only if it doesn't exist.
+func GeneratePy(srcDir string) (outPath, content string, err error) {
+	p, err := ExtractPy(srcDir)
 	if err != nil {
 		return "", "", err
 	}
-
-	pyFiles, err := ScanPythonFiles(absDir)
+	absDir, err := filepath.Abs(srcDir)
 	if err != nil {
 		return "", "", err
 	}
-	if len(pyFiles) == 0 {
-		return "", "", fmt.Errorf("no .py files found in %s", pkgDir)
-	}
-
-	// Extract API from all source files, merged.
-	merged := extract.NewPackageInfo("")
-	for _, f := range pyFiles {
-		info, err := runExtractScript(filepath.Join(absDir, f))
-		if err != nil {
-			return "", "", fmt.Errorf("extracting %s: %w", f, err)
-		}
-		if merged.Name == "" && info.Name != "" {
-			merged.Name = info.Name
-		}
-		mergePyInfo(merged, info)
-	}
-
-	pkgName := merged.Name
-	if pkgName == "" {
-		pkgName = filepath.Base(absDir)
-	}
-
-	// Generate stub content.
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("#ldd:source %s\n", strings.Join(pyFiles, ", ")))
-	b.WriteString("#ldd:why \"\"\n")
-
-	// Sort names for deterministic output.
-	structNames := sortedKeys(merged.Structs)
-	ifaceNames := sortedInterfaceKeys(merged.Interfaces)
-	funcNames := sortedFuncKeys(merged.Functions)
-	typeDefNames := sortedTypeDefKeys(merged.TypeDefs)
-
-	for _, name := range structNames {
-		si := merged.Structs[name]
-		b.WriteString("\n")
-		writePyDoc(&b, si.Doc)
-		writePyLocation(&b, si.File, si.Line)
-		b.WriteString(fmt.Sprintf("class %s:\n", name))
-		sortedFields := extract.SortedFieldsByName(si.Fields)
-		for _, f := range sortedFields {
-			b.WriteString(fmt.Sprintf("    %s: %s\n", f.Name, f.SignatureText))
-		}
-		methodNames := sortedMethodKeys(si.Methods)
-		if len(sortedFields) > 0 && len(methodNames) > 0 {
-			b.WriteString("\n")
-		}
-		for _, mn := range methodNames {
-			mf := si.Methods[mn]
-			writePyDoc(&b, mf.Doc)
-			writePyLocation(&b, mf.File, mf.Line)
-			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", mf)))
-		}
-		if len(sortedFields) == 0 && len(methodNames) == 0 {
-			b.WriteString("    ...\n")
-		}
-	}
-
-	for _, name := range ifaceNames {
-		ii := merged.Interfaces[name]
-		b.WriteString("\n")
-		writePyDoc(&b, ii.Doc)
-		writePyLocation(&b, ii.File, ii.Line)
-		b.WriteString(fmt.Sprintf("class %s(Protocol):\n", name))
-		methodNames := sortedMethodKeys(ii.Methods)
-		for _, mn := range methodNames {
-			mf := ii.Methods[mn]
-			writePyDoc(&b, mf.Doc)
-			writePyLocation(&b, mf.File, mf.Line)
-			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", mf)))
-		}
-		if len(methodNames) == 0 {
-			b.WriteString("    ...\n")
-		}
-	}
-
-	for _, name := range typeDefNames {
-		td := merged.TypeDefs[name]
-		b.WriteString("\n")
-		writePyLocation(&b, td.File, td.Line)
-		b.WriteString(fmt.Sprintf("%s = %s\n", name, td.Underlying))
-	}
-
-	for _, name := range funcNames {
-		fi := merged.Functions[name]
-		b.WriteString("\n")
-		writePyDoc(&b, fi.Doc)
-		writePyLocation(&b, fi.File, fi.Line)
-		b.WriteString(fmt.Sprintf("%s\n", buildPyFuncSig(name, "", fi)))
-	}
-
-	b.WriteString("\n# --- index ---\n")
-	b.WriteString("# Auto-generated function/method index.\n")
-	b.WriteString("# DO NOT EDIT below this line — regenerated by `lyre update`.\n")
-
-	outName := pkgName + ".py.lyric"
-	outPath = filepath.Join(absDir, outName)
-	return outPath, b.String(), nil
+	outPath = filepath.Join(absDir, p.Name+".py.lyric")
+	content = udd.Write(p)
+	return outPath, content, nil
 }
 
-// --- Verify ---
-
-// VerifyPyLDD compares a .py.lyric understanding file against the actual Python source.
-func VerifyPyLDD(lddPath string) (*VerifyResult, error) {
-	declared, meta, err := ParsePyLDDFile(lddPath)
+// UpdatePy refreshes lyricPath: re-extracts signatures/positions from
+// Python source, adds new exports, preserves all human prose (ModuleWhy,
+// Docs, Invariants, per-decl Why, per-field Doc). Source list refreshed.
+func UpdatePy(lyricPath string) (added []string, err error) {
+	raw, err := os.ReadFile(lyricPath)
 	if err != nil {
 		return nil, err
 	}
-	if len(meta.Source) == 0 {
-		return nil, fmt.Errorf("no #ldd:source directive found in %s", lddPath)
+	existing, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}
 
-	lddDir := filepath.Dir(lddPath)
-	actual := extract.NewPackageInfo("")
+	srcDir := filepath.Dir(lyricPath)
+	fresh, err := ExtractPy(srcDir)
+	if err != nil {
+		return nil, err
+	}
+
+	added = mergeFreshIntoExisting(existing, fresh)
+
+	out := udd.Write(existing)
+	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
+// VerifyPy parses lyricPath as a .py.lyric v2 file, re-extracts the
+// Python source it lives next to, and reports drift via Findings.
+func VerifyPy(lyricPath string) (*VerifyResult, error) {
+	raw, err := os.ReadFile(lyricPath)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
+
+	srcDir := filepath.Dir(lyricPath)
+	actual, err := ExtractPy(srcDir)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &VerifyResult{}
-	srcStr := strings.Join(meta.Source, ", ")
-
-	for _, srcFile := range meta.Source {
-		fullPath := filepath.Join(lddDir, srcFile)
-		if _, err := os.Stat(fullPath); err != nil {
-			result.add(SevError, lddPath, srcFile, "source file does not exist")
-			continue
-		}
-		info, err := runExtractScript(fullPath)
-		if err != nil {
-			return nil, fmt.Errorf("extracting %s: %w", srcFile, err)
-		}
-		mergePyInfo(actual, info)
-	}
-
-	// Compare declared vs actual.
-	comparePyStructs(declared, actual, lddPath, srcStr, result)
-	comparePyInterfaces(declared, actual, lddPath, srcStr, result)
-	comparePyFunctions(declared, actual, lddPath, srcStr, result)
-	checkPyCompleteness(declared, actual, lddPath, srcStr, result)
-
+	srcStr := strings.Join(actual.ModuleSource, ", ")
+	compareStructs(declared, actual, lyricPath, srcStr, result)
+	compareInterfaces(declared, actual, lyricPath, srcStr, result)
+	compareFunctions(declared, actual, lyricPath, srcStr, result)
+	compareTypeDefs(declared, actual, lyricPath, srcStr, result)
+	checkCompleteness(declared, actual, lyricPath, srcStr, result)
 	return result, nil
 }
 
-func comparePyStructs(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
-	for name, ds := range declared.Structs {
+// --- merge ----------------------------------------------------------------
+
+// mergeFreshIntoExisting refreshes signatures/positions on existing decls
+// from `fresh`, adds new exports, and refreshes the module source list.
+// All human prose on existing decls is preserved.
+//
+// NOT pruned: decls present in existing but absent from fresh remain in
+// the file (VerifyPy reports them as drift).
+func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
+	var added []string
+
+	existing.ModuleSource = fresh.ModuleSource
+
+	for _, name := range sortedKeys(fresh.Structs) {
+		fs := fresh.Structs[name]
+		es, ok := existing.Structs[name]
+		if !ok {
+			existing.Structs[name] = fs
+			added = append(added, "class "+name)
+			continue
+		}
+		es.File, es.Line, es.Source = fs.File, fs.Line, fs.Source
+		es.IsClass = fs.IsClass
+		preservedDoc := map[string]string{}
+		for _, f := range es.Fields {
+			if f.Doc != "" {
+				preservedDoc[f.Name] = f.Doc
+			}
+		}
+		es.Fields = es.Fields[:0]
+		for _, f := range fs.Fields {
+			ff := f
+			if doc, ok := preservedDoc[f.Name]; ok {
+				ff.Doc = doc
+			}
+			es.Fields = append(es.Fields, ff)
+		}
+		for mn, fm := range fs.Methods {
+			if em, ok := es.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				es.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
+			}
+		}
+	}
+
+	for _, name := range sortedKeys(fresh.Interfaces) {
+		fi := fresh.Interfaces[name]
+		ei, ok := existing.Interfaces[name]
+		if !ok {
+			existing.Interfaces[name] = fi
+			added = append(added, "interface "+name)
+			continue
+		}
+		ei.File, ei.Line, ei.Source = fi.File, fi.Line, fi.Source
+		for mn, fm := range fi.Methods {
+			if em, ok := ei.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				ei.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("interface %s.%s", name, mn))
+			}
+		}
+	}
+
+	for _, name := range sortedKeys(fresh.Functions) {
+		ff := fresh.Functions[name]
+		ef, ok := existing.Functions[name]
+		if !ok {
+			existing.Functions[name] = ff
+			added = append(added, "function "+name)
+			continue
+		}
+		ef.SignatureText = ff.SignatureText
+		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
+	}
+
+	for _, name := range sortedKeys(fresh.TypeDefs) {
+		ft := fresh.TypeDefs[name]
+		et, ok := existing.TypeDefs[name]
+		if !ok {
+			existing.TypeDefs[name] = ft
+			added = append(added, "type "+name)
+			continue
+		}
+		et.Underlying = ft.Underlying
+		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
+	}
+
+	sort.Strings(added)
+	return added
+}
+
+// --- verify comparison helpers --------------------------------------------
+
+func compareStructs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Structs) {
+		ds := declared.Structs[name]
 		as, ok := actual.Structs[name]
 		if !ok {
-			r.add(SevError, file, src, fmt.Sprintf("class %s declared in LDD but not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("class %s declared in .lyric but not found in source", name))
 			continue
 		}
-		// Check fields
 		for _, df := range ds.Fields {
-			at, ok := as.FieldSig(df.Name)
+			actualType, ok := as.FieldSig(df.Name)
 			if !ok {
-				r.add(SevError, file, src, fmt.Sprintf("class %s: field %s declared in LDD but not in source", name, df.Name))
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: field %s not found in source", name, df.Name))
 				continue
 			}
-			if normalizeType(df.SignatureText) != normalizeType(at) {
-				r.add(SevError, file, src, fmt.Sprintf("class %s: field %s type mismatch: LDD=%s, source=%s", name, df.Name, df.SignatureText, at))
+			if !typesMatch(df.SignatureText, actualType) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: field %s type mismatch: .lyric=%s, source=%s", name, df.Name, df.SignatureText, actualType))
 			}
 		}
-		// Check methods
-		for mn := range ds.Methods {
-			if _, ok := as.Methods[mn]; !ok {
-				r.add(SevError, file, src, fmt.Sprintf("class %s: method %s declared in LDD but not in source", name, mn))
+		var extras []string
+		for _, af := range as.Fields {
+			if !ds.HasField(af.Name) {
+				extras = append(extras, af.Name)
+			}
+		}
+		sort.Strings(extras)
+		for _, extra := range extras {
+			result.add(SevWarning, file, srcStr, fmt.Sprintf("%s: source has field %s not in .lyric", name, extra))
+		}
+		for mn, dm := range ds.Methods {
+			am, ok := as.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
 			}
 		}
 	}
 }
 
-func comparePyInterfaces(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
-	for name, di := range declared.Interfaces {
+func compareInterfaces(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Interfaces) {
+		di := declared.Interfaces[name]
 		ai, ok := actual.Interfaces[name]
 		if !ok {
-			r.add(SevError, file, src, fmt.Sprintf("Protocol %s declared in LDD but not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("interface %s declared in .lyric but not found in source", name))
 			continue
 		}
-		for mn := range di.Methods {
-			if _, ok := ai.Methods[mn]; !ok {
-				r.add(SevError, file, src, fmt.Sprintf("Protocol %s: method %s declared in LDD but not in source", name, mn))
+		for mn, dm := range di.Methods {
+			am, ok := ai.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
 			}
 		}
 	}
 }
 
-func comparePyFunctions(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
+func compareFunctions(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Functions) {
+		df := declared.Functions[name]
+		af, ok := actual.Functions[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s declared in .lyric but not found in source", name))
+			continue
+		}
+		if !sigMatch(df.SignatureText, af.SignatureText) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s signature mismatch: .lyric=%q, source=%q", name, df.SignatureText, af.SignatureText))
+		}
+	}
+}
+
+func compareTypeDefs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.TypeDefs) {
+		dt := declared.TypeDefs[name]
+		at, ok := actual.TypeDefs[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("type %s declared in .lyric but not found in source", name))
+			continue
+		}
+		if !typesMatch(dt.Underlying, at.Underlying) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("type %s underlying mismatch: .lyric=%s, source=%s", name, dt.Underlying, at.Underlying))
+		}
+	}
+}
+
+func checkCompleteness(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	declaredNames := map[string]bool{}
+	for name := range declared.Structs {
+		declaredNames[name] = true
+	}
+	for name := range declared.Interfaces {
+		declaredNames[name] = true
+	}
 	for name := range declared.Functions {
-		if _, ok := actual.Functions[name]; !ok {
-			r.add(SevError, file, src, fmt.Sprintf("function %s declared in LDD but not found in source", name))
-		}
+		declaredNames[name] = true
 	}
-}
+	for name := range declared.TypeDefs {
+		declaredNames[name] = true
+	}
 
-func checkPyCompleteness(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
+	var missing []string
 	for name := range actual.Structs {
-		if _, ok := declared.Structs[name]; !ok {
-			if _, ok := declared.Interfaces[name]; !ok {
-				r.add(SevWarning, file, src, fmt.Sprintf("class %s in source is not documented in LDD", name))
-			}
+		if !declaredNames[name] {
+			missing = append(missing, "class "+name)
 		}
 	}
 	for name := range actual.Interfaces {
-		if _, ok := declared.Interfaces[name]; !ok {
-			if _, ok := declared.Structs[name]; !ok {
-				r.add(SevWarning, file, src, fmt.Sprintf("Protocol %s in source is not documented in LDD", name))
-			}
+		if !declaredNames[name] {
+			missing = append(missing, "interface "+name)
 		}
 	}
-	for name := range actual.Functions {
-		if _, ok := declared.Functions[name]; !ok {
-			r.add(SevWarning, file, src, fmt.Sprintf("function %s in source is not documented in LDD", name))
-		}
-	}
-}
-
-// normalizeType strips whitespace for comparison.
-func normalizeType(t string) string {
-	return strings.ReplaceAll(strings.TrimSpace(t), " ", "")
-}
-
-// --- Update ---
-
-// UpdatePyLDD refreshes a .py.lyric file by adding any exported symbols from
-// source that are not yet documented. Existing declarations are left unchanged.
-// Returns a summary of what was added.
-func UpdatePyLDD(lddPath string) (added []string, err error) {
-	src, err := os.ReadFile(lddPath)
-	if err != nil {
-		return nil, err
-	}
-	text := string(src)
-
-	declared, meta, err := ParsePyLDDFile(lddPath)
-	if err != nil {
-		return nil, fmt.Errorf("parsing LDD file: %w", err)
-	}
-	if len(meta.Source) == 0 {
-		return nil, fmt.Errorf("no #ldd:source directive in %s", lddPath)
-	}
-
-	lddDir := filepath.Dir(lddPath)
-	actual := extract.NewPackageInfo("")
-	for _, srcFile := range meta.Source {
-		fullPath := filepath.Join(lddDir, srcFile)
-		info, err := runExtractScript(fullPath)
-		if err != nil {
-			return nil, fmt.Errorf("extracting %s: %w", srcFile, err)
-		}
-		mergePyInfo(actual, info)
-	}
-
-	// Split at index marker.
-	humanPart, _ := splitAtIndexMarkerPy(text)
-
-	var newDecls strings.Builder
-
-	// Missing structs.
-	var missingStructNames []string
-	for name := range actual.Structs {
-		if _, ok := declared.Structs[name]; !ok {
-			if _, ok := declared.Interfaces[name]; !ok {
-				missingStructNames = append(missingStructNames, name)
-			}
-		}
-	}
-	sort.Strings(missingStructNames)
-	for _, name := range missingStructNames {
-		as := actual.Structs[name]
-		newDecls.WriteString("\n")
-		writePyDoc(&newDecls, as.Doc)
-		writePyLocation(&newDecls, as.File, as.Line)
-		newDecls.WriteString(fmt.Sprintf("class %s:\n", name))
-		sortedFields := extract.SortedFieldsByName(as.Fields)
-		for _, f := range sortedFields {
-			newDecls.WriteString(fmt.Sprintf("    %s: %s\n", f.Name, f.SignatureText))
-		}
-		methodNames := sortedMethodKeys(as.Methods)
-		if len(sortedFields) > 0 && len(methodNames) > 0 {
-			newDecls.WriteString("\n")
-		}
-		for _, mn := range methodNames {
-			newDecls.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", as.Methods[mn])))
-		}
-		if len(sortedFields) == 0 && len(methodNames) == 0 {
-			newDecls.WriteString("    ...\n")
-		}
-		added = append(added, "class "+name)
-	}
-
-	// Missing interfaces.
-	var missingIfaceNames []string
-	for name := range actual.Interfaces {
-		if _, ok := declared.Interfaces[name]; !ok {
-			if _, ok := declared.Structs[name]; !ok {
-				missingIfaceNames = append(missingIfaceNames, name)
-			}
-		}
-	}
-	sort.Strings(missingIfaceNames)
-	for _, name := range missingIfaceNames {
-		ai := actual.Interfaces[name]
-		newDecls.WriteString("\n")
-		writePyDoc(&newDecls, ai.Doc)
-		writePyLocation(&newDecls, ai.File, ai.Line)
-		newDecls.WriteString(fmt.Sprintf("class %s(Protocol):\n", name))
-		methodNames := sortedMethodKeys(ai.Methods)
-		for _, mn := range methodNames {
-			newDecls.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", ai.Methods[mn])))
-		}
-		if len(methodNames) == 0 {
-			newDecls.WriteString("    ...\n")
-		}
-		added = append(added, "Protocol "+name)
-	}
-
-	// Missing type defs.
-	var missingTypeNames []string
 	for name := range actual.TypeDefs {
-		if _, ok := declared.TypeDefs[name]; !ok {
-			if _, ok := declared.Structs[name]; !ok {
-				if _, ok := declared.Interfaces[name]; !ok {
-					missingTypeNames = append(missingTypeNames, name)
-				}
-			}
+		if !declaredNames[name] {
+			missing = append(missing, "type "+name)
 		}
 	}
-	sort.Strings(missingTypeNames)
-	for _, name := range missingTypeNames {
-		td := actual.TypeDefs[name]
-		newDecls.WriteString("\n")
-		writePyLocation(&newDecls, td.File, td.Line)
-		newDecls.WriteString(fmt.Sprintf("%s = %s\n", name, td.Underlying))
-		added = append(added, "type "+name)
-	}
-
-	// Missing functions.
-	var missingFuncNames []string
 	for name := range actual.Functions {
-		if _, ok := declared.Functions[name]; !ok {
-			missingFuncNames = append(missingFuncNames, name)
+		if !declaredNames[name] {
+			missing = append(missing, "function "+name)
 		}
 	}
-	sort.Strings(missingFuncNames)
-	for _, name := range missingFuncNames {
-		fi := actual.Functions[name]
-		newDecls.WriteString("\n")
-		writePyDoc(&newDecls, fi.Doc)
-		writePyLocation(&newDecls, fi.File, fi.Line)
-		newDecls.WriteString(fmt.Sprintf("%s\n", buildPyFuncSig(name, "", fi)))
-		added = append(added, "func "+name)
-	}
-
-	// Reconstruct the file.
-	result := strings.TrimRight(humanPart, "\n")
-	if newDecls.Len() > 0 {
-		result += "\n" + newDecls.String()
-	}
-	result += "\n# --- index ---\n"
-	result += "# Auto-generated function/method index.\n"
-	result += "# DO NOT EDIT below this line — regenerated by `lyre update`.\n"
-
-	return added, os.WriteFile(lddPath, []byte(result), 0644)
-}
-
-// splitAtIndexMarkerPy splits the file content at "# --- index ---".
-func splitAtIndexMarkerPy(text string) (human string, rest string) {
-	const marker = "\n# --- index ---\n"
-	if idx := strings.Index(text, marker); idx >= 0 {
-		return text[:idx], text[idx:]
-	}
-	return text, ""
-}
-
-// --- Rendering helpers ---
-
-// writePyDoc emits a doc comment block using # prefix.
-func writePyDoc(b *strings.Builder, doc string) {
-	if doc == "" {
-		return
-	}
-	// Use only the first line for brevity
-	first := strings.SplitN(doc, "\n", 2)[0]
-	b.WriteString("# " + first + "\n")
-}
-
-// writePyLocation emits a file:line reference comment.
-func writePyLocation(b *strings.Builder, file string, line int) {
-	if file != "" && line > 0 {
-		b.WriteString(fmt.Sprintf("# %s:%d\n", file, line))
+	sort.Strings(missing)
+	for _, kind := range missing {
+		result.add(SevError, file, srcStr, fmt.Sprintf("exported %s not documented in .lyric", kind))
 	}
 }
 
-// --- Merge helper ---
+// --- signature normalization ----------------------------------------------
 
-func mergePyInfo(dst, src *extract.PackageInfo) {
-	for k, v := range src.Structs {
-		if existing, ok := dst.Structs[k]; ok {
-			for _, f := range v.Fields {
-				existing.SetField(f.Name, f.SignatureText)
-			}
-			for mk, mv := range v.Methods {
-				existing.Methods[mk] = mv
+func sigMatch(a, b string) bool {
+	return normalizeSig(a) == normalizeSig(b)
+}
+
+func normalizeSig(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	inSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' || c == '\t' {
+			if !inSpace {
+				b.WriteByte(' ')
+				inSpace = true
 			}
 		} else {
-			dst.Structs[k] = v
+			b.WriteByte(c)
+			inSpace = false
 		}
 	}
-	for k, v := range src.Interfaces {
-		dst.Interfaces[k] = v
-	}
-	for k, v := range src.Functions {
-		dst.Functions[k] = v
-	}
-	for k, v := range src.TypeDefs {
-		dst.TypeDefs[k] = v
-	}
+	return b.String()
 }
 
-// --- Sorting helpers ---
+func typesMatch(a, b string) bool {
+	return sigMatch(a, b)
+}
 
-func sortedKeys(m map[string]*extract.StructInfo) []string {
-	keys := make([]string, 0, len(m))
+// --- sort helpers ---------------------------------------------------------
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		out = append(out, k)
 	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedInterfaceKeys(m map[string]*extract.InterfaceInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedFuncKeys(m map[string]*extract.FuncInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedTypeDefKeys(m map[string]*extract.TypeDefInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedMethodKeys(m map[string]*extract.FuncInfo) []string {
-	return sortedFuncKeys(m)
+	sort.Strings(out)
+	return out
 }
 
 func sortedStringMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
+	out := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		out = append(out, k)
 	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(out)
+	return out
+}
+
+func sortedFuncJSONKeys(m map[string]pyFuncJSON) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

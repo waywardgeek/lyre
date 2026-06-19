@@ -122,7 +122,7 @@ func cmdVerify(args []string) error {
 				}
 			}
 		case "python":
-			result, err := python.VerifyPyLDD(path)
+			result, err := python.VerifyPy(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -247,7 +247,7 @@ func cmdUpdate(args []string) error {
 				}
 			}
 		case "python":
-			added, err := python.UpdatePyLDD(path)
+			added, err := python.UpdatePy(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -303,7 +303,7 @@ func cmdGen(args []string) error {
 		}
 		fmt.Printf("generated %s\n", outPath)
 	case "python":
-		outPath, content, err := python.GeneratePyLDDFile(pkgDir)
+		outPath, content, err := python.GeneratePy(pkgDir)
 		if err != nil {
 			return err
 		}
