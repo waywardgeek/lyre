@@ -1025,3 +1025,87 @@ Phase 3c) → **Phase 7.5** (extend the CodeRhapsody server's `.forge`
 UDD-enforcement to `.lyric` files — MUST land before Phase 7 so the
 backfill operates under enforcement) → Phase 7 (docs + backfill
 `checker.ly.lyric` for the Lyric checker).
+
+---
+
+## 2026-06-19 — Phase 4 complete (lint)
+
+`pkg/lint` is in. `lyre lint <file.lyric> [...]` parses via `pkg/udd` and
+runs 8 language-agnostic checks against the `*extract.PackageInfo`.
+
+### Checks implemented
+
+| Code | Trigger |
+|------|---------|
+| W001 | empty module-level `why:` |
+| W002 | no `doc "Architecture"` block (case-insensitive title match) |
+| W003 | ≥1 class/struct/interface with ≥3 methods, but module has zero invariants |
+| W004 | class/struct with ≥4 methods, none of which has a `why:` |
+| W005 | struct with ≥3 fields including ≥1 enum-typed field, with no per-field `doc:` anywhere on the struct |
+| W006 | invariant block with no `verified-by:` AND not marked `procedural` |
+| W007 | `verified-by:` references a test name not in `Opts.KnownTests` — dormant when `KnownTests` is nil |
+| W008 | case-sensitive `"TODO"` substring in any prose field (ModuleWhy, doc bodies, invariant bodies, per-decl `Why`, per-field `Doc`) |
+
+### Design notes (worth carrying forward)
+
+- **Lint is separate from verify.** Verify (pkg/extract/*/`VerifyXxx`)
+  compares `.lyric` against native source (drift detection). Lint
+  inspects only what's already in the parsed `*PackageInfo` —
+  completeness, TODO-hygiene, internal consistency. Lint has its own
+  `Finding{Code, Severity, File, Where, Message}` type because verify
+  Findings don't have a `Code` field.
+- **W005 enum heuristic**: a field is "enum-typed" iff its trimmed
+  `SignatureText` matches a key in `p.TypeDefs`. Imperfect — won't catch
+  enum types defined in another package — but a good starting heuristic
+  with no language-specific machinery.
+- **W007 test discovery deferred to Phase 4.5.** CLI passes
+  `Opts{KnownTests: nil}`, so W007 is dormant in CLI use. The
+  programmatic API exercises it (used by `TestLint_W007_*`). Future
+  Phase 4.5 will scan sibling `*_test.go` / `*_test.py` / etc. for test
+  function names.
+- **Deterministic output**: findings sorted by `(Code, Where)`. Methods
+  / fields / typedefs iterated via sorted-key helpers.
+- **One why: is enough to suppress W004.** The check fires only if NO
+  method has a `why:`. Intent: nudge curation, don't demand exhaustive
+  rationale.
+
+### CLI shape
+
+```
+lyre lint [--fatal-warnings] <file.lyric> [...]
+```
+
+Without `--fatal-warnings`, lint exits 0 regardless of warning count
+(reporting only). With it, exits 1 if any warning fired. Mirrors verify's
+error-counting shape (verify already exits 1 on errors).
+
+### Tests
+
+22 tests in `pkg/lint/lint_test.go`. Fixtures constructed directly as
+`*PackageInfo` values — no extractor invocation, no skip helper. One
+test per warning code, plus negative-case tests (e.g.
+`TestLint_W004_OneMethodWhyIsEnough`, `TestLint_W007_DormantWhenNilSet`),
+plus `TestLint_CleanPackage` (clean fixture produces zero findings),
+plus determinism + format tests.
+
+### Dogfood
+
+`/tmp/lyre lint pkg/extract/golang/golang.go.lyric` produced 3
+plausible warnings (W001 missing module why, W002 missing Architecture
+doc, W005 `Finding` struct with enum-typed `Severity` field and no
+per-field docs) — exactly what auto-generated v1-skeleton files should
+trip. Legacy v1 `.lyric` files (still using `//go:build ignore` +
+`//ldd:` directives) error at parse with a clear message; Phase 6 will
+migrate them.
+
+### Velocity
+
+~30min vs 3h plan estimate. Pattern is now firmly in the
+single-digit-hours regime. `go test ./...` 100% green.
+
+### Up next
+
+Phase 5 (`lyre gen --rich`) → Phase 6 (v1→v2 migration; pick up the
+deferred `isLyLyric` / plain-`.lyric` cleanup) → **Phase 7.5** (UDD
+enforcement extension in CR server — MUST land before Phase 7) → Phase 7
+(docs + backfill `checker.ly.lyric`).

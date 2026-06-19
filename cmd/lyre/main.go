@@ -18,6 +18,8 @@ import (
 	lyricext "github.com/waywardgeek/lyre/pkg/extract/lyric"
 	"github.com/waywardgeek/lyre/pkg/extract/python"
 	tsext "github.com/waywardgeek/lyre/pkg/extract/typescript"
+	"github.com/waywardgeek/lyre/pkg/lint"
+	"github.com/waywardgeek/lyre/pkg/udd"
 	"github.com/waywardgeek/lyre/pkg/verifier"
 )
 
@@ -27,10 +29,11 @@ Commands:
   verify   <file> [...]          Check understanding files against source code
   update   <file> [...]          Regenerate auto-generated sections
   gen      <package-dir>         Scaffold a new understanding file from source
+  lint     <file.lyric> [...]    Report recoverable quality issues in .lyric files
   fmt      <file.lyric> [...]    Format .lyric files (Lyric syntax only)
 `
 
-var commands = []string{"verify", "update", "gen", "fmt", "help"}
+var commands = []string{"verify", "update", "gen", "lint", "fmt", "help"}
 
 // resolveCommand matches a unique prefix of a command name.
 func resolveCommand(prefix string) (string, error) {
@@ -77,6 +80,8 @@ func main() {
 		err = cmdUpdate(args)
 	case "gen":
 		err = cmdGen(args)
+	case "lint":
+		err = cmdLint(args)
 	case "fmt":
 		err = cmdFmt(args)
 	case "help":
@@ -340,6 +345,56 @@ func cmdGen(args []string) error {
 		fmt.Printf("generated %s\n", outPath)
 	default:
 		return fmt.Errorf("unsupported language in %s (found: %s)", pkgDir, lang)
+	}
+	return nil
+}
+
+// --- lint ---
+
+// cmdLint runs the language-agnostic linter on one or more .lyric files.
+// Each file is parsed via pkg/udd (any syntactic error is fatal), then
+// pkg/lint inspects the resulting *PackageInfo for recoverable issues
+// (W001-W008). Exit code is 1 if --fatal-warnings is set and any warning
+// fired; otherwise 0 regardless of warning count.
+//
+// Test-name discovery for W007 is deferred (Phase 4.5). The CLI passes a
+// nil KnownTests set, so W007 is dormant in CLI use but exercisable via
+// the programmatic API.
+func cmdLint(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file.lyric> [...]")
+	}
+	fatal := false
+	var files []string
+	for _, a := range args {
+		if a == "--fatal-warnings" {
+			fatal = true
+		} else {
+			files = append(files, a)
+		}
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file.lyric> [...]")
+	}
+	totalWarnings := 0
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		pkg, err := udd.Parse(string(data), path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		r := lint.Lint(pkg, path, lint.Opts{})
+		for _, f := range r.Findings {
+			fmt.Println(f)
+		}
+		totalWarnings += r.WarningCount()
+	}
+	fmt.Printf("\n%d warnings\n", totalWarnings)
+	if fatal && totalWarnings > 0 {
+		os.Exit(1)
 	}
 	return nil
 }
