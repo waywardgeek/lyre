@@ -796,3 +796,119 @@ shape: `ExtractLy/GenerateLy/UpdateLy/VerifyLy`. Extends
 `~/projects/lyric/tools/extract_api.ly` to emit verbatim source spans
 per decl, then the Go wrapper converts JSON → `*PackageInfo`. Risk 1
 was resolved earlier (no touch to `lyric.stable`).
+
+---
+
+## 2026-06-19 — Phase 3c complete (Lyric extractor)
+
+Rewrite of `pkg/extract/lyric/` to the v2 `.ly.lyric` pipeline. ~1h
+elapsed vs ½-day plan estimate. `go test ./...` 100% green.
+
+**Shortcut taken (not in plan v1)**: did NOT extend
+`~/projects/lyric/tools/extract_api.ly`. The existing pre-compiled
+`extract_api` binary already emits all the data needed
+(`name`/`params`/`returns`/`file`/`line`/`is_class`/`underlying`); per
+Phase 3a/3b precedent, `SignatureText` is built in Go from the
+structured JSON. Zero Lyric tooling changes. `lyric.stable` and
+`tools/extract_api.ly` untouched.
+
+**New public API** (mirrors Phase 3a/3b exactly):
+- `ExtractLy(srcDir) → *PackageInfo`
+- `GenerateLy(srcDir) → (outPath, content, err)`
+- `UpdateLy(lyricPath) → (added, err)`
+- `VerifyLy(lyricPath) → (*VerifyResult, err)`
+- `VerifyResult` / `Finding` / `Severity` types live in this package.
+
+**Deleted** (legacy v1 surface): `GenerateLyLDDFile`, `UpdateLyLDD`,
+`VerifyLyLDD`, `ParseLyLDDFile`, `ParseLyLDDMeta`, `ScanLyricFiles`,
+`writeLyLocation`, `buildLyFuncSig`, `splitAtIndexMarker`,
+`convertPackageJSON`, `convertFuncJSON`, and all `//ldd:source` /
+`//ldd:why` directive scraping. Per the top-of-plan rule, UDD docs
+live in the `.lyric` file only — never in Lyric source comments.
+
+**Kept**: `findExtractBinary` (search order unchanged: LYRIC_HOME,
+alongside `lyric` on PATH, `~/projects/lyric/tools/`), all JSON-shape
+types (`lyPackageJSON`/`lyStructJSON`/`lyFuncJSON`/`lyParamJSON`/
+`lyTypeDefJSON`), `ExtractBinaryName` constant.
+
+**Signature conventions for Lyric** (third language, third confirmation):
+- **Field SignatureText**: type-only (e.g. `i32`, `Token?`,
+  `Dict<Sym, TokenKind>?`). Verbatim from extractor JSON.
+- **Method SignatureText**: `Name(self, p: T) -> R`. Methods always
+  get a leading `self` parameter (extractor strips it; Go wrapper
+  re-adds). No `func` keyword, no `permanent` modifier, no body.
+- **Function SignatureText**: `Name(p: T) -> R`. No leading `self`.
+- **No return clause** if `returns` is empty/empty-string: signature
+  ends at the closing `)`.
+- **Multi-return**: `Name(...) -> (T1, T2)`.
+- **`mut self`**: NOT recovered. The extractor drops self-mutability
+  from JSON, so SignatureText reads `scale(self, k: f64)` even when
+  source reads `scale(mut self, k: f64)`. Consistent with Go (Phase
+  3a) omitting receiver-side mutability. Documented in
+  `lyFuncSigText` doc comment as known limitation.
+- **`mut` on non-self params**: preserved (`mut x: T`).
+
+**`udd.Write`/`udd.Parse` class-vs-struct discrimination check**:
+verified up front per plan step 4. `pkg/udd/writer.go` lines 203-205
+emit `class` when `StructInfo.IsClass=true`, `struct` otherwise.
+`pkg/udd/parser.go` line 432-433 sets `IsClass=true` on `class` block
+heads. No `pkg/udd` patch needed. Lyric is the first language to
+exercise both heads in one file — round-trip test
+`TestGenerateLy_RoundTripsThroughUDD` asserts both `Circle.IsClass`
+and `Point.IsClass` survive a write→parse cycle.
+
+**`cmd/lyre/main.go` callsite renames**: 3 sites, mechanical:
+`lyricext.VerifyLyLDD` → `VerifyLy`, `lyricext.UpdateLyLDD` →
+`UpdateLy`, `lyricext.GenerateLyLDDFile` → `GenerateLy`. Did NOT
+simplify the `isLyLyric` branching or remove the plain-`.lyric` v1
+paths (`runUpdate`/`cmdFmt`/`verifier.Verify`) — deferred to Phase 6
+(migration). Just renames; keep diff minimal.
+
+**Test fixture**: green-field — no prior tests existed. 16 tests
+mirroring Phase 3b's TS layout. Sample source covers all 5
+constructs in one file (enum, struct, class with methods, interface,
+top-level func). Stable subdir name `shapes/` keeps the
+`.ly.lyric` module identifier valid. `requireExtractor` helper at
+the top of every test skips cleanly when extract_api isn't
+buildable on the host — preserves CI portability. The skip path
+was NOT exercised in this session (extract_api was buildable).
+
+**Cleaner `PreservesHumanProse` test fixture**: applied for the
+third time. Pattern is now load-bearing: extract → tweak prose on
+the `*PackageInfo` directly → `udd.Write` → seed file. No string
+splicing anywhere in the test suite. (Phase 3a's
+`TestUpdateGo_PreservesHumanProse` is still the lone holdout with
+ugly `strings.Replace` splicing — logged for a follow-up sweep,
+still not blocking.)
+
+**Linux build of `lyric` + `extract_api`**: this session built both
+on Linux x86_64 (the checked-in binaries at
+`~/projects/lyric/tools/extract_api` and `~/projects/lyric/lyric.stable`
+are Mac arm64). Required `CFLAGS='-std=gnu11 -O2 -w
+-Wno-error=incompatible-pointer-types'` to work around the
+known `_method_aliases` RC bug (gcc treats incompatible-pointer-types
+as a hard error by default; Mac clang only warned). Built lyric in
+~1s, extract_api in ~5s. The Linux extract_api now lives at
+`~/projects/lyric/tools/extract_api` and is discoverable by
+`findExtractBinary` for all Lyre tests.
+
+**Dogfood**: `cd ~/projects/lyre && go build -o /tmp/lyre
+./cmd/lyre && /tmp/lyre gen ~/projects/lyric/src/lexer && /tmp/lyre
+verify ~/projects/lyric/src/lexer/lexer.ly.lyric` → "0 errors, 0
+warnings". Generated file is 88 lines, includes the giant `enum
+TokenKind` typedef as a one-line `enum { ... }` block, plus all 3
+structs/classes (LexerState as `struct`, Token and Lexer as `class`),
+all 28 methods on Lexer, all 8 top-level functions. The pre-existing
+`lexer.ly.lyric` was backed up before generation and restored after
+— `~/projects/lyric/src/lexer/` is byte-identical to its pre-Phase-3c
+state.
+
+**Test status**: `go test ./...` from `~/projects/lyre/` is 100%
+green across all packages (extract, extract/golang, extract/lyric,
+extract/python, extract/typescript, parser, udd, verifier).
+
+**Up next**: Phase 3d (Python extractor, ½-day plan estimate, defer-
+able) → Phase 4 (lint) → Phase 5 (gen --rich) → Phase 6 (migration,
+including isLyLyric / plain-.lyric path cleanup deferred from this
+phase) → **Phase 7.5 (UDD enforcement extension in CR server — MUST
+land before Phase 7)** → Phase 7 (docs + backfill `checker.ly.lyric`).

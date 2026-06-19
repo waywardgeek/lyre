@@ -137,7 +137,7 @@ func cmdVerify(args []string) error {
 			}
 		case "lyric":
 			if isLyLyric(path) {
-				result, err := lyricext.VerifyLyLDD(path)
+				result, err := lyricext.VerifyLy(path)
 				if err != nil {
 					return fmt.Errorf("%s: %w", path, err)
 				}
@@ -215,7 +215,7 @@ func cmdUpdate(args []string) error {
 		switch lang {
 		case "lyric":
 			if isLyLyric(path) {
-				added, err := lyricext.UpdateLyLDD(path)
+				added, err := lyricext.UpdateLy(path)
 				if err != nil {
 					return fmt.Errorf("%s: %w", path, err)
 				}
@@ -315,7 +315,7 @@ func cmdGen(args []string) error {
 		}
 		fmt.Printf("generated %s\n", outPath)
 	case "lyric":
-		outPath, content, err := lyricext.GenerateLyLDDFile(pkgDir)
+		outPath, content, err := lyricext.GenerateLy(pkgDir)
 		if err != nil {
 			return err
 		}

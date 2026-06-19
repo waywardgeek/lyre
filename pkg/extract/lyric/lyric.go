@@ -1,9 +1,28 @@
-// Package lyric provides Lyric-syntax LDD file generation and parsing.
-// A .ly.lyric file is a Lyric source file containing type declarations,
-// function signatures, and LDD metadata in //ldd: comments.
+// Package lyric's `.ly.lyric` v2 entry points: ExtractLy, GenerateLy,
+// UpdateLy, VerifyLy. The `.ly.lyric` file is the persistent UDD artifact
+// for a Lyric directory — a small declarative DSL parsed/written by
+// pkg/udd, whose payload lines (field types, method signatures, function
+// signatures) are verbatim Lyric text treated as opaque strings.
 //
-// The extractor calls the pre-compiled extract_api binary from the Lyric
-// project to parse .ly files and produce JSON matching PackageInfo.
+// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// lives in the .lyric file ONLY, never as `//ldd:source`, `//ldd:why`, or
+// other smuggled directives in Lyric source. Extractors are signatures-only.
+// The legacy ParseLyLDDFile / // --- index --- layout and //ldd: scraping
+// are gone.
+//
+// Extraction pipeline:
+//   - The pre-compiled `extract_api` binary (built in the Lyric project,
+//     located via findExtractBinary) parses one or more .ly files and
+//     emits a single JSON blob.
+//   - This package converts the JSON into an extract.PackageInfo with
+//     SignatureText fields populated for round-trip through the .lyric v2
+//     format.
+//   - Field SignatureText is type-only (e.g. "i32", "Token?",
+//     "Dict<Sym, TokenKind>"). Method and function SignatureText is
+//     "Name(self, p: T) -> R" or "Name(p: T) -> R" for top-level — no
+//     `func` keyword, no `permanent` modifier, no trailing braces.
+//     Methods always include `self` as the leading parameter, matching the
+//     Lyric source convention (Phase 3c follows legacy buildLyFuncSig).
 package lyric
 
 import (
@@ -16,64 +35,92 @@ import (
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
+	"github.com/waywardgeek/lyre/pkg/udd"
 )
 
 // ExtractBinaryName is the name of the Lyric API extraction tool.
 const ExtractBinaryName = "extract_api"
 
+// --- VerifyResult / Finding / Severity ------------------------------------
+
 // Severity levels for verification findings.
 type Severity int
 
 const (
-	SevError   Severity = iota
+	SevError Severity = iota
 	SevWarning
 	SevInfo
 )
 
-// Finding is a single verification issue.
+func (s Severity) String() string {
+	switch s {
+	case SevError:
+		return "ERROR"
+	case SevWarning:
+		return "WARNING"
+	case SevInfo:
+		return "INFO"
+	}
+	return "UNKNOWN"
+}
+
+// Finding is a single verification report.
 type Finding struct {
 	Severity Severity
 	File     string
-	Context  string
+	Source   string
 	Message  string
 }
 
 func (f Finding) String() string {
-	prefix := "INFO"
-	switch f.Severity {
-	case SevError:
-		prefix = "ERROR"
-	case SevWarning:
-		prefix = "WARNING"
+	loc := f.File
+	if f.Source != "" {
+		loc = fmt.Sprintf("%s ↔ %s", f.File, f.Source)
 	}
-	return fmt.Sprintf("%s: %s: %s", prefix, f.File, f.Message)
+	return fmt.Sprintf("[%s] %s: %s", f.Severity, loc, f.Message)
 }
 
-// VerifyResult collects verification findings.
+// VerifyResult holds all findings from a verification run.
 type VerifyResult struct {
 	Findings []Finding
 }
 
-func (r *VerifyResult) add(sev Severity, file, ctx, msg string) {
-	r.Findings = append(r.Findings, Finding{Severity: sev, File: file, Context: ctx, Message: msg})
+func (r *VerifyResult) add(sev Severity, file, source, msg string) {
+	r.Findings = append(r.Findings, Finding{
+		Severity: sev,
+		File:     file,
+		Source:   source,
+		Message:  msg,
+	})
 }
 
-// --- JSON types matching extract_api output ---
+// ErrorCount returns the number of SevError findings.
+func (r *VerifyResult) ErrorCount() int {
+	n := 0
+	for _, f := range r.Findings {
+		if f.Severity == SevError {
+			n++
+		}
+	}
+	return n
+}
+
+// --- JSON shape from extract_api ------------------------------------------
 
 type lyPackageJSON struct {
-	Name       string                    `json:"name"`
-	Structs    map[string]lyStructJSON   `json:"structs"`
-	Interfaces map[string]lyIfaceJSON    `json:"interfaces"`
-	Functions  map[string]lyFuncJSON     `json:"functions"`
-	TypeDefs   map[string]lyTypeDefJSON  `json:"typedefs"`
+	Name       string                   `json:"name"`
+	Structs    map[string]lyStructJSON  `json:"structs"`
+	Interfaces map[string]lyIfaceJSON   `json:"interfaces"`
+	Functions  map[string]lyFuncJSON    `json:"functions"`
+	TypeDefs   map[string]lyTypeDefJSON `json:"typedefs"`
 }
 
 type lyStructJSON struct {
-	Fields  map[string]string        `json:"fields"`
-	Methods map[string]lyFuncJSON    `json:"methods"`
-	File    string                   `json:"file"`
-	Line    int                      `json:"line"`
-	IsClass bool                     `json:"is_class"`
+	Fields  map[string]string     `json:"fields"`
+	Methods map[string]lyFuncJSON `json:"methods"`
+	File    string                `json:"file"`
+	Line    int                   `json:"line"`
+	IsClass bool                  `json:"is_class"`
 }
 
 type lyIfaceJSON struct {
@@ -101,20 +148,18 @@ type lyTypeDefJSON struct {
 	Line       int    `json:"line"`
 }
 
-// --- Binary location ---
+// --- Binary location ------------------------------------------------------
 
 // findExtractBinary locates the extract_api binary.
-// Search order: 1) LYRIC_HOME/tools/ 2) alongside lyric binary on PATH 3) ~/projects/lyric/tools/
+// Search order: 1) LYRIC_HOME/tools/ 2) alongside lyric binary on PATH
+// 3) ~/projects/lyric/tools/.
 func findExtractBinary() (string, error) {
-	// Check LYRIC_HOME
 	if home := os.Getenv("LYRIC_HOME"); home != "" {
 		p := filepath.Join(home, "tools", ExtractBinaryName)
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}
 	}
-
-	// Check alongside lyric binary on PATH
 	if lyricPath, err := exec.LookPath("lyric"); err == nil {
 		dir := filepath.Dir(lyricPath)
 		p := filepath.Join(dir, "tools", ExtractBinaryName)
@@ -122,28 +167,22 @@ func findExtractBinary() (string, error) {
 			return p, nil
 		}
 	}
-
-	// Default: ~/projects/lyric/tools/
-	home, err := os.UserHomeDir()
-	if err == nil {
+	if home, err := os.UserHomeDir(); err == nil {
 		p := filepath.Join(home, "projects", "lyric", "tools", ExtractBinaryName)
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}
 	}
-
-	return "", fmt.Errorf("cannot find %s binary; set LYRIC_HOME or ensure it's built (make tools in lyric project)", ExtractBinaryName)
+	return "", fmt.Errorf("cannot find %s binary; set LYRIC_HOME or build it (make tools in the lyric project)", ExtractBinaryName)
 }
 
-// --- Script execution ---
-
-// runExtract runs the extract_api binary against the given .ly files.
-func runExtract(paths ...string) (*extract.PackageInfo, error) {
+// runExtract runs the extract_api binary against the given .ly file paths
+// and returns the decoded JSON.
+func runExtract(paths ...string) (*lyPackageJSON, error) {
 	bin, err := findExtractBinary()
 	if err != nil {
 		return nil, err
 	}
-
 	cmd := exec.Command(bin, paths...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -152,597 +191,555 @@ func runExtract(paths ...string) (*extract.PackageInfo, error) {
 		}
 		return nil, fmt.Errorf("running extract_api: %w", err)
 	}
-
 	var raw lyPackageJSON
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parsing extractor output: %w\nraw: %s", err, string(out[:min(len(out), 200)]))
+		preview := out
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return nil, fmt.Errorf("parsing extractor output: %w\nraw: %s", err, string(preview))
 	}
-
-	return convertPackageJSON(&raw), nil
+	return &raw, nil
 }
 
-func convertPackageJSON(raw *lyPackageJSON) *extract.PackageInfo {
-	info := extract.NewPackageInfo(raw.Name)
+// --- ExtractLy ------------------------------------------------------------
 
-	for name, s := range raw.Structs {
+// ExtractLy parses every non-test .ly file in srcDir and returns the public
+// API as a *PackageInfo whose SignatureText fields are populated for round-
+// trip through the .lyric v2 format.
+//
+// Skips: test_*.ly, *_test.ly, .ly.lyric files (those are UDD declarations,
+// not source). Module name = dir basename, matching Phase 3a/3b precedent.
+func ExtractLy(srcDir string) (*extract.PackageInfo, error) {
+	absDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return nil, err
+	}
+	files, err := scanLyFiles(absDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .ly files found in %s", srcDir)
+	}
+
+	fullPaths := make([]string, len(files))
+	for i, f := range files {
+		fullPaths[i] = filepath.Join(absDir, f)
+	}
+	raw, err := runExtract(fullPaths...)
+	if err != nil {
+		return nil, err
+	}
+
+	p := extract.NewPackageInfo(filepath.Base(absDir))
+	p.ModuleSource = files
+	mergeJSONInto(p, raw)
+	return p, nil
+}
+
+// scanLyFiles returns the sorted list of non-test .ly files in dir
+// (basenames only). Files ending in `.ly.lyric` end with `.lyric`, not
+// `.ly`, so they're naturally excluded by the `.ly` suffix check.
+func scanLyFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".ly") {
+			continue
+		}
+		if strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test.ly") {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// mergeJSONInto folds the extractor's JSON into the accumulating
+// PackageInfo, converting each decl to its in-memory shape with canonical
+// SignatureText fields.
+func mergeJSONInto(p *extract.PackageInfo, raw *lyPackageJSON) {
+	for name, cls := range raw.Structs {
 		si := extract.NewStructInfo()
-		si.File = filepath.Base(s.File)
-		si.Line = s.Line
-		si.IsClass = s.IsClass
-		for fn, ft := range s.Fields {
-			si.SetField(fn, ft)
+		si.IsClass = cls.IsClass
+		si.File = filepath.Base(cls.File)
+		si.Line = cls.Line
+		if si.File != "" && si.Line > 0 {
+			si.Source = fmt.Sprintf("%s:%d", si.File, si.Line)
 		}
-		for mn, mf := range s.Methods {
-			si.Methods[mn] = convertFuncJSON(mf)
+		for _, fname := range sortedStringMapKeys(cls.Fields) {
+			si.SetField(fname, cls.Fields[fname])
 		}
-		info.Structs[name] = si
+		for _, mname := range sortedFuncJSONKeys(cls.Methods) {
+			mf := cls.Methods[mname]
+			si.Methods[mname] = funcInfoFromJSON(mname, mf, true)
+		}
+		p.Structs[name] = si
 	}
 
 	for name, iface := range raw.Interfaces {
 		ii := extract.NewInterfaceInfo()
 		ii.File = filepath.Base(iface.File)
 		ii.Line = iface.Line
-		for mn, mf := range iface.Methods {
-			ii.Methods[mn] = convertFuncJSON(mf)
+		if ii.File != "" && ii.Line > 0 {
+			ii.Source = fmt.Sprintf("%s:%d", ii.File, ii.Line)
 		}
-		info.Interfaces[name] = ii
+		for _, mname := range sortedFuncJSONKeys(iface.Methods) {
+			mf := iface.Methods[mname]
+			ii.Methods[mname] = funcInfoFromJSON(mname, mf, true)
+		}
+		p.Interfaces[name] = ii
 	}
 
 	for name, fn := range raw.Functions {
-		info.Functions[name] = convertFuncJSON(fn)
+		p.Functions[name] = funcInfoFromJSON(name, fn, false)
 	}
 
 	for name, td := range raw.TypeDefs {
-		info.TypeDefs[name] = &extract.TypeDefInfo{
+		ti := &extract.TypeDefInfo{
 			Underlying: td.Underlying,
 			File:       filepath.Base(td.File),
 			Line:       td.Line,
 		}
+		if ti.File != "" && ti.Line > 0 {
+			ti.Source = fmt.Sprintf("%s:%d", ti.File, ti.Line)
+		}
+		p.TypeDefs[name] = ti
 	}
-
-	return info
 }
 
-func convertFuncJSON(fn lyFuncJSON) *extract.FuncInfo {
-	fi := &extract.FuncInfo{File: filepath.Base(fn.File), Line: fn.Line}
-	for _, p := range fn.Params {
-		fi.Params = append(fi.Params, extract.ParamInfo{Name: p.Name, Type: p.Type, IsMut: p.Mut})
+// funcInfoFromJSON builds a *FuncInfo whose SignatureText is the canonical
+// Lyric form: "Name(self, p: T) -> R" for methods, "Name(p: T) -> R" for
+// top-level functions. Empty return list omits the `-> R` clause.
+func funcInfoFromJSON(name string, fn lyFuncJSON, isMethod bool) *extract.FuncInfo {
+	fi := &extract.FuncInfo{
+		SignatureText: lyFuncSigText(name, fn, isMethod),
+		File:          filepath.Base(fn.File),
+		Line:          fn.Line,
 	}
-	fi.Returns = fn.Returns
+	if fi.File != "" && fi.Line > 0 {
+		fi.Source = fmt.Sprintf("%s:%d", fi.File, fi.Line)
+	}
 	return fi
 }
 
-// --- Metadata parsing ---
-
-// ParseLyLDDMeta extracts //ldd: metadata from the text of a .ly.lyric file.
-func ParseLyLDDMeta(src string) *extract.LDDMeta {
-	meta := &extract.LDDMeta{Lang: "lyric"}
-	for _, line := range strings.Split(src, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "//ldd:source ") {
-			sources := strings.TrimPrefix(line, "//ldd:source ")
-			for _, s := range strings.Split(sources, ",") {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					meta.Source = append(meta.Source, s)
-				}
-			}
-		} else if strings.HasPrefix(line, "//ldd:why ") {
-			meta.Why = strings.Trim(strings.TrimPrefix(line, "//ldd:why "), "\"")
-		}
+// lyFuncSigText builds the canonical FuncInfo.SignatureText for a Lyric
+// func or method.
+//
+// Methods (isMethod=true) get a leading `self` parameter matching the
+// Lyric source convention. Mutability of self (`mut self`) is NOT
+// recovered — the extractor's JSON drops it. SignatureText is therefore
+// "scale(self, k: f64)" even when source reads "scale(mut self, k: f64)".
+// This is consistent with the legacy Phase-3a/Go behavior of omitting
+// receiver-side mutability info.
+func lyFuncSigText(name string, fn lyFuncJSON, isMethod bool) string {
+	parts := make([]string, 0, len(fn.Params)+1)
+	if isMethod {
+		parts = append(parts, "self")
 	}
-	return meta
-}
-
-// --- Parse LDD file ---
-
-// ParseLyLDDFile parses a .ly.lyric understanding file and returns both the
-// declared API and the LDD metadata.
-func ParseLyLDDFile(path string) (*extract.PackageInfo, *extract.LDDMeta, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	meta := ParseLyLDDMeta(string(src))
-
-	// Run the extraction on the .ly.lyric file itself (it's valid Lyric syntax)
-	info, err := runExtract(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-
-	return info, meta, nil
-}
-
-// --- Scan Lyric files ---
-
-// ScanLyricFiles returns the .ly filenames in absDir (base names only),
-// excluding test files.
-func ScanLyricFiles(absDir string) ([]string, error) {
-	entries, err := os.ReadDir(absDir)
-	if err != nil {
-		return nil, err
-	}
-	var files []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".ly") {
-			continue
-		}
-		// Skip test files
-		if strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test.ly") {
-			continue
-		}
-		files = append(files, name)
-	}
-	sort.Strings(files)
-	return files, nil
-}
-
-// --- Generate LDD file ---
-
-// writeLyLocation emits a file:line reference comment.
-func writeLyLocation(b *strings.Builder, file string, line int) {
-	if file != "" && line > 0 {
-		b.WriteString(fmt.Sprintf("// %s:%d\n", file, line))
-	}
-}
-
-// buildLyFuncSig builds a Lyric-syntax function signature.
-func buildLyFuncSig(name string, hasSelf bool, fi *extract.FuncInfo) string {
-	var b strings.Builder
-	b.WriteString("func ")
-	b.WriteString(name)
-	b.WriteString("(")
-	first := true
-	if hasSelf {
-		b.WriteString("self")
-		first = false
-	}
-	for _, p := range fi.Params {
-		if !first {
-			b.WriteString(", ")
-		}
-		first = false
-		if p.IsMut {
+	for _, p := range fn.Params {
+		var b strings.Builder
+		if p.Mut {
 			b.WriteString("mut ")
 		}
 		b.WriteString(p.Name)
-		if p.Type != "" && p.Type != "any" {
+		if p.Type != "" {
 			b.WriteString(": ")
 			b.WriteString(p.Type)
 		}
+		parts = append(parts, b.String())
 	}
-	b.WriteString(")")
-	if len(fi.Returns) > 0 && fi.Returns[0] != "" {
-		if len(fi.Returns) == 1 {
-			b.WriteString(" -> ")
-			b.WriteString(fi.Returns[0])
-		} else {
-			b.WriteString(" -> (")
-			b.WriteString(strings.Join(fi.Returns, ", "))
-			b.WriteString(")")
-		}
+	sig := fmt.Sprintf("%s(%s)", name, strings.Join(parts, ", "))
+	if len(fn.Returns) == 0 || (len(fn.Returns) == 1 && fn.Returns[0] == "") {
+		return sig
 	}
-	return b.String()
+	if len(fn.Returns) == 1 {
+		return sig + " -> " + fn.Returns[0]
+	}
+	return sig + " -> (" + strings.Join(fn.Returns, ", ") + ")"
 }
 
-// GenerateLyLDDFile produces a .ly.lyric understanding file for a directory of .ly files.
-func GenerateLyLDDFile(pkgDir string) (outPath, content string, err error) {
-	absDir, err := filepath.Abs(pkgDir)
+// --- GenerateLy / UpdateLy / VerifyLy -------------------------------------
+
+// GenerateLy scaffolds a fresh <dirname>.ly.lyric file for srcDir. It does
+// NOT write to disk; the caller chooses what to do with the returned
+// content (the lyre CLI writes only if the target doesn't already exist).
+func GenerateLy(srcDir string) (outPath, content string, err error) {
+	p, err := ExtractLy(srcDir)
 	if err != nil {
 		return "", "", err
 	}
-
-	lyFiles, err := ScanLyricFiles(absDir)
+	absDir, err := filepath.Abs(srcDir)
 	if err != nil {
 		return "", "", err
 	}
-	if len(lyFiles) == 0 {
-		return "", "", fmt.Errorf("no .ly files found in %s", pkgDir)
-	}
-
-	// Run extractor on all .ly files
-	var fullPaths []string
-	for _, f := range lyFiles {
-		fullPaths = append(fullPaths, filepath.Join(absDir, f))
-	}
-	merged, err := runExtract(fullPaths...)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Determine module name
-	moduleName := merged.Name
-	if moduleName == "" {
-		moduleName = filepath.Base(absDir)
-	}
-
-	// Build .ly.lyric content
-	var b strings.Builder
-	b.WriteString("//ldd:source ")
-	b.WriteString(strings.Join(lyFiles, ", "))
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("//ldd:why \"TODO: describe what %s does\"\n", moduleName))
-	b.WriteString("\n")
-
-	// Sorted keys for deterministic output
-	structNames := sortedStructKeys(merged.Structs)
-	ifaceNames := sortedIfaceKeys(merged.Interfaces)
-	funcNames := sortedFuncKeys(merged.Functions)
-	typeDefNames := sortedTypeDefKeys(merged.TypeDefs)
-
-	// Enums (typedefs)
-	for _, name := range typeDefNames {
-		td := merged.TypeDefs[name]
-		writeLyLocation(&b, td.File, td.Line)
-		b.WriteString(fmt.Sprintf("// %s = %s\n\n", name, td.Underlying))
-	}
-
-	// Structs and classes
-	for _, name := range structNames {
-		si := merged.Structs[name]
-		writeLyLocation(&b, si.File, si.Line)
-		keyword := "struct"
-		if si.IsClass {
-			keyword = "class"
-		}
-		b.WriteString(fmt.Sprintf("%s %s {\n", keyword, name))
-		for _, f := range extract.SortedFieldsByName(si.Fields) {
-			b.WriteString(fmt.Sprintf("  %s: %s\n", f.Name, f.SignatureText))
-		}
-		b.WriteString("}\n")
-
-		methodNames := sortedMethodKeys(si.Methods)
-		for _, mn := range methodNames {
-			mf := si.Methods[mn]
-			writeLyLocation(&b, mf.File, mf.Line)
-			b.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(fmt.Sprintf("%s.%s", name, mn), true, mf)))
-		}
-		b.WriteString("\n")
-	}
-
-	// Interfaces
-	for _, name := range ifaceNames {
-		ii := merged.Interfaces[name]
-		writeLyLocation(&b, ii.File, ii.Line)
-		b.WriteString(fmt.Sprintf("interface %s {\n", name))
-		methodNames := sortedMethodKeys(ii.Methods)
-		for _, mn := range methodNames {
-			b.WriteString(fmt.Sprintf("  %s\n", buildLyFuncSig(mn, true, ii.Methods[mn])))
-		}
-		b.WriteString("}\n\n")
-	}
-
-	// Free functions
-	for _, name := range funcNames {
-		fi := merged.Functions[name]
-		writeLyLocation(&b, fi.File, fi.Line)
-		b.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(name, false, fi)))
-	}
-
-	b.WriteString("\n// --- index ---\n")
-	b.WriteString("// DO NOT EDIT below this line — regenerated by `lyre update`.\n")
-
-	// Determine output filename
-	dirBase := filepath.Base(absDir)
-	outName := dirBase + ".ly.lyric"
-	outPath = filepath.Join(absDir, outName)
-
-	return outPath, b.String(), nil
+	outPath = filepath.Join(absDir, p.Name+".ly.lyric")
+	content = udd.Write(p)
+	return outPath, content, nil
 }
 
-// --- Verify ---
-
-// VerifyLyLDD checks a .ly.lyric file against its source files.
-func VerifyLyLDD(path string) (*VerifyResult, error) {
-	src, err := os.ReadFile(path)
+// UpdateLy refreshes lyricPath: re-extracts signatures/positions from Lyric
+// source, adds new exports, preserves all human prose (ModuleWhy, Docs,
+// Invariants, per-decl Why, per-field Doc). Returns the human-readable list
+// of additions. Source list is refreshed.
+func UpdateLy(lyricPath string) (added []string, err error) {
+	raw, err := os.ReadFile(lyricPath)
 	if err != nil {
 		return nil, err
 	}
-	srcStr := string(src)
+	existing, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
 
-	declared, meta, err := ParseLyLDDFile(path)
+	srcDir := filepath.Dir(lyricPath)
+	fresh, err := ExtractLy(srcDir)
+	if err != nil {
+		return nil, err
+	}
+
+	added = mergeFreshIntoExisting(existing, fresh)
+
+	out := udd.Write(existing)
+	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
+// VerifyLy parses lyricPath as a .ly.lyric v2 file, re-extracts the Lyric
+// source it lives next to, and reports drift via Findings.
+func VerifyLy(lyricPath string) (*VerifyResult, error) {
+	raw, err := os.ReadFile(lyricPath)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
+
+	srcDir := filepath.Dir(lyricPath)
+	actual, err := ExtractLy(srcDir)
 	if err != nil {
 		return nil, err
 	}
 
 	result := &VerifyResult{}
-	if len(meta.Source) == 0 {
-		result.add(SevError, path, srcStr, "no //ldd:source directive")
-		return result, nil
-	}
-
-	// Extract actual API from source files.
-	lddDir := filepath.Dir(path)
-	var fullPaths []string
-	for _, srcFile := range meta.Source {
-		fullPath := filepath.Join(lddDir, srcFile)
-		if _, err := os.Stat(fullPath); err != nil {
-			result.add(SevError, path, srcFile, fmt.Sprintf("source file %s does not exist", srcFile))
-			continue
-		}
-		fullPaths = append(fullPaths, fullPath)
-	}
-	if len(fullPaths) == 0 {
-		return result, nil
-	}
-
-	actual, err := runExtract(fullPaths...)
-	if err != nil {
-		return nil, fmt.Errorf("extracting source: %w", err)
-	}
-
-	// Compare declared vs actual
-	compareLyStructs(declared, actual, path, srcStr, result)
-	compareLyInterfaces(declared, actual, path, srcStr, result)
-	compareLyFunctions(declared, actual, path, srcStr, result)
-	checkLyCompleteness(declared, actual, path, srcStr, result)
-
+	srcStr := strings.Join(actual.ModuleSource, ", ")
+	compareStructs(declared, actual, lyricPath, srcStr, result)
+	compareInterfaces(declared, actual, lyricPath, srcStr, result)
+	compareFunctions(declared, actual, lyricPath, srcStr, result)
+	compareTypeDefs(declared, actual, lyricPath, srcStr, result)
+	checkCompleteness(declared, actual, lyricPath, srcStr, result)
 	return result, nil
 }
 
-func compareLyStructs(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
-	for name, ds := range declared.Structs {
+// --- merge ----------------------------------------------------------------
+
+// mergeFreshIntoExisting refreshes signatures/positions on existing decls
+// from `fresh`, adds new exports, and refreshes the module-level source
+// list. All human prose on existing decls is preserved.
+//
+// NOT pruned: decls present in existing but absent from fresh remain in
+// the file (VerifyLy reports them as drift).
+func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
+	var added []string
+
+	existing.ModuleSource = fresh.ModuleSource
+
+	for _, name := range sortedKeys(fresh.Structs) {
+		fs := fresh.Structs[name]
+		es, ok := existing.Structs[name]
+		if !ok {
+			existing.Structs[name] = fs
+			kind := "struct"
+			if fs.IsClass {
+				kind = "class"
+			}
+			added = append(added, kind+" "+name)
+			continue
+		}
+		es.File, es.Line, es.Source = fs.File, fs.Line, fs.Source
+		es.IsClass = fs.IsClass
+		preservedDoc := map[string]string{}
+		for _, f := range es.Fields {
+			if f.Doc != "" {
+				preservedDoc[f.Name] = f.Doc
+			}
+		}
+		es.Fields = es.Fields[:0]
+		for _, f := range fs.Fields {
+			ff := f
+			if doc, ok := preservedDoc[f.Name]; ok {
+				ff.Doc = doc
+			}
+			es.Fields = append(es.Fields, ff)
+		}
+		for mn, fm := range fs.Methods {
+			if em, ok := es.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				es.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
+			}
+		}
+	}
+
+	for _, name := range sortedKeys(fresh.Interfaces) {
+		fi := fresh.Interfaces[name]
+		ei, ok := existing.Interfaces[name]
+		if !ok {
+			existing.Interfaces[name] = fi
+			added = append(added, "interface "+name)
+			continue
+		}
+		ei.File, ei.Line, ei.Source = fi.File, fi.Line, fi.Source
+		for mn, fm := range fi.Methods {
+			if em, ok := ei.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				ei.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("interface %s.%s", name, mn))
+			}
+		}
+	}
+
+	for _, name := range sortedKeys(fresh.Functions) {
+		ff := fresh.Functions[name]
+		ef, ok := existing.Functions[name]
+		if !ok {
+			existing.Functions[name] = ff
+			added = append(added, "function "+name)
+			continue
+		}
+		ef.SignatureText = ff.SignatureText
+		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
+	}
+
+	for _, name := range sortedKeys(fresh.TypeDefs) {
+		ft := fresh.TypeDefs[name]
+		et, ok := existing.TypeDefs[name]
+		if !ok {
+			existing.TypeDefs[name] = ft
+			added = append(added, "type "+name)
+			continue
+		}
+		et.Underlying = ft.Underlying
+		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
+	}
+
+	sort.Strings(added)
+	return added
+}
+
+// --- verify comparison helpers --------------------------------------------
+
+func compareStructs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Structs) {
+		ds := declared.Structs[name]
 		as, ok := actual.Structs[name]
 		if !ok {
-			r.add(SevError, file, src, fmt.Sprintf("struct/class %s declared in LDD but not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("class/struct %s declared in .lyric but not found in source", name))
 			continue
 		}
-		for _, f := range ds.Fields {
-			if !as.HasField(f.Name) {
-				r.add(SevError, file, src, fmt.Sprintf("%s.%s: field declared in LDD but not found in source", name, f.Name))
+		for _, df := range ds.Fields {
+			actualType, ok := as.FieldSig(df.Name)
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: field %s not found in source", name, df.Name))
+				continue
+			}
+			if !typesMatch(df.SignatureText, actualType) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: field %s type mismatch: .lyric=%s, source=%s", name, df.Name, df.SignatureText, actualType))
 			}
 		}
-		for mn := range ds.Methods {
-			if _, ok := as.Methods[mn]; !ok {
-				r.add(SevError, file, src, fmt.Sprintf("%s.%s: method declared in LDD but not found in source", name, mn))
+		var extras []string
+		for _, af := range as.Fields {
+			if !ds.HasField(af.Name) {
+				extras = append(extras, af.Name)
+			}
+		}
+		sort.Strings(extras)
+		for _, extra := range extras {
+			result.add(SevWarning, file, srcStr, fmt.Sprintf("%s: source has field %s not in .lyric", name, extra))
+		}
+		for mn, dm := range ds.Methods {
+			am, ok := as.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
 			}
 		}
 	}
 }
 
-func compareLyInterfaces(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
-	for name, di := range declared.Interfaces {
+func compareInterfaces(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Interfaces) {
+		di := declared.Interfaces[name]
 		ai, ok := actual.Interfaces[name]
 		if !ok {
-			r.add(SevError, file, src, fmt.Sprintf("interface %s declared in LDD but not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("interface %s declared in .lyric but not found in source", name))
 			continue
 		}
-		for mn := range di.Methods {
-			if _, ok := ai.Methods[mn]; !ok {
-				r.add(SevError, file, src, fmt.Sprintf("%s.%s: method declared in LDD but not found in source", name, mn))
+		for mn, dm := range di.Methods {
+			am, ok := ai.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
 			}
 		}
 	}
 }
 
-func compareLyFunctions(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
+func compareFunctions(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Functions) {
+		df := declared.Functions[name]
+		af, ok := actual.Functions[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s declared in .lyric but not found in source", name))
+			continue
+		}
+		if !sigMatch(df.SignatureText, af.SignatureText) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s signature mismatch: .lyric=%q, source=%q", name, df.SignatureText, af.SignatureText))
+		}
+	}
+}
+
+func compareTypeDefs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.TypeDefs) {
+		dt := declared.TypeDefs[name]
+		at, ok := actual.TypeDefs[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("type %s declared in .lyric but not found in source", name))
+			continue
+		}
+		if !typesMatch(dt.Underlying, at.Underlying) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("type %s underlying mismatch: .lyric=%s, source=%s", name, dt.Underlying, at.Underlying))
+		}
+	}
+}
+
+func checkCompleteness(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	declaredNames := map[string]bool{}
+	for name := range declared.Structs {
+		declaredNames[name] = true
+	}
+	for name := range declared.Interfaces {
+		declaredNames[name] = true
+	}
 	for name := range declared.Functions {
-		if _, ok := actual.Functions[name]; !ok {
-			r.add(SevError, file, src, fmt.Sprintf("function %s declared in LDD but not found in source", name))
-		}
+		declaredNames[name] = true
 	}
-}
+	for name := range declared.TypeDefs {
+		declaredNames[name] = true
+	}
 
-func checkLyCompleteness(declared, actual *extract.PackageInfo, file, src string, r *VerifyResult) {
-	for name := range actual.Structs {
-		if _, ok := declared.Structs[name]; !ok {
-			r.add(SevWarning, file, src, fmt.Sprintf("struct/class %s in source is not documented in LDD", name))
+	var missing []string
+	for name, s := range actual.Structs {
+		if !declaredNames[name] {
+			kind := "struct"
+			if s.IsClass {
+				kind = "class"
+			}
+			missing = append(missing, kind+" "+name)
 		}
 	}
 	for name := range actual.Interfaces {
-		if _, ok := declared.Interfaces[name]; !ok {
-			r.add(SevWarning, file, src, fmt.Sprintf("interface %s in source is not documented in LDD", name))
+		if !declaredNames[name] {
+			missing = append(missing, "interface "+name)
 		}
 	}
-	for name := range actual.Functions {
-		if _, ok := declared.Functions[name]; !ok {
-			r.add(SevWarning, file, src, fmt.Sprintf("function %s in source is not documented in LDD", name))
-		}
-	}
-}
-
-// --- Update ---
-
-// UpdateLyLDD refreshes a .ly.lyric file by adding any symbols from
-// source that are not yet documented. Returns a summary of what was added.
-func UpdateLyLDD(lddPath string) (added []string, err error) {
-	src, err := os.ReadFile(lddPath)
-	if err != nil {
-		return nil, err
-	}
-	text := string(src)
-
-	declared, meta, err := ParseLyLDDFile(lddPath)
-	if err != nil {
-		return nil, fmt.Errorf("parsing LDD file: %w", err)
-	}
-	if len(meta.Source) == 0 {
-		return nil, fmt.Errorf("no //ldd:source directive in %s", lddPath)
-	}
-
-	// Extract actual API
-	lddDir := filepath.Dir(lddPath)
-	var fullPaths []string
-	for _, srcFile := range meta.Source {
-		fullPaths = append(fullPaths, filepath.Join(lddDir, srcFile))
-	}
-	actual, err := runExtract(fullPaths...)
-	if err != nil {
-		return nil, fmt.Errorf("extracting source: %w", err)
-	}
-
-	// Split at index marker
-	const indexMarker = "\n// --- index ---\n"
-	humanPart, _ := splitAtIndexMarker(text)
-
-	var newDecls strings.Builder
-
-	// Missing structs/classes
-	var missingStructNames []string
-	for name := range actual.Structs {
-		if _, ok := declared.Structs[name]; !ok {
-			missingStructNames = append(missingStructNames, name)
-		}
-	}
-	sort.Strings(missingStructNames)
-	for _, name := range missingStructNames {
-		si := actual.Structs[name]
-		keyword := "struct"
-		if si.IsClass {
-			keyword = "class"
-		}
-		newDecls.WriteString("\n")
-		writeLyLocation(&newDecls, si.File, si.Line)
-		newDecls.WriteString(fmt.Sprintf("%s %s {\n", keyword, name))
-		for _, f := range extract.SortedFieldsByName(si.Fields) {
-			newDecls.WriteString(fmt.Sprintf("  %s: %s\n", f.Name, f.SignatureText))
-		}
-		newDecls.WriteString("}\n")
-		for _, mn := range sortedMethodKeys(si.Methods) {
-			mf := si.Methods[mn]
-			writeLyLocation(&newDecls, mf.File, mf.Line)
-			newDecls.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(fmt.Sprintf("%s.%s", name, mn), true, mf)))
-		}
-		added = append(added, name)
-	}
-
-	// Missing interfaces
-	var missingIfaceNames []string
-	for name := range actual.Interfaces {
-		if _, ok := declared.Interfaces[name]; !ok {
-			missingIfaceNames = append(missingIfaceNames, name)
-		}
-	}
-	sort.Strings(missingIfaceNames)
-	for _, name := range missingIfaceNames {
-		ii := actual.Interfaces[name]
-		newDecls.WriteString("\n")
-		writeLyLocation(&newDecls, ii.File, ii.Line)
-		newDecls.WriteString(fmt.Sprintf("interface %s {\n", name))
-		for _, mn := range sortedMethodKeys(ii.Methods) {
-			newDecls.WriteString(fmt.Sprintf("  %s\n", buildLyFuncSig(mn, true, ii.Methods[mn])))
-		}
-		newDecls.WriteString("}\n")
-		added = append(added, name)
-	}
-
-	// Missing functions
-	var missingFuncNames []string
-	for name := range actual.Functions {
-		if _, ok := declared.Functions[name]; !ok {
-			missingFuncNames = append(missingFuncNames, name)
-		}
-	}
-	sort.Strings(missingFuncNames)
-	for _, name := range missingFuncNames {
-		fi := actual.Functions[name]
-		newDecls.WriteString("\n")
-		writeLyLocation(&newDecls, fi.File, fi.Line)
-		newDecls.WriteString(fmt.Sprintf("%s\n", buildLyFuncSig(name, false, fi)))
-		added = append(added, name)
-	}
-
-	// Missing enums/typedefs
-	var missingTypeDefNames []string
 	for name := range actual.TypeDefs {
-		if _, ok := declared.TypeDefs[name]; !ok {
-			missingTypeDefNames = append(missingTypeDefNames, name)
+		if !declaredNames[name] {
+			missing = append(missing, "type "+name)
 		}
 	}
-	sort.Strings(missingTypeDefNames)
-	for _, name := range missingTypeDefNames {
-		td := actual.TypeDefs[name]
-		newDecls.WriteString("\n")
-		writeLyLocation(&newDecls, td.File, td.Line)
-		newDecls.WriteString(fmt.Sprintf("// %s = %s\n", name, td.Underlying))
-		added = append(added, name)
+	for name := range actual.Functions {
+		if !declaredNames[name] {
+			missing = append(missing, "function "+name)
+		}
 	}
-
-	if len(added) == 0 {
-		return nil, nil
+	sort.Strings(missing)
+	for _, kind := range missing {
+		result.add(SevError, file, srcStr, fmt.Sprintf("exported %s not documented in .lyric", kind))
 	}
-
-	// Rebuild file: human part + new decls + index marker + auto-generated section
-	var rebuilt strings.Builder
-	rebuilt.WriteString(strings.TrimRight(humanPart, "\n"))
-	rebuilt.WriteString("\n")
-	rebuilt.WriteString(newDecls.String())
-	rebuilt.WriteString("\n// --- index ---\n")
-	rebuilt.WriteString("// DO NOT EDIT below this line — regenerated by `lyre update`.\n")
-
-	if err := os.WriteFile(lddPath, []byte(rebuilt.String()), 0644); err != nil {
-		return nil, err
-	}
-
-	return added, nil
 }
 
-func splitAtIndexMarker(text string) (human, auto string) {
-	const marker = "\n// --- index ---\n"
-	i := strings.Index(text, marker)
-	if i < 0 {
-		return text, ""
-	}
-	return text[:i], text[i+len(marker):]
+// --- signature normalization ----------------------------------------------
+
+// sigMatch compares two signatures with spec §7 normalization: strip
+// leading/trailing whitespace, collapse runs of ASCII whitespace to a
+// single space, then byte-equal.
+func sigMatch(a, b string) bool {
+	return normalizeSig(a) == normalizeSig(b)
 }
 
-// --- Helpers ---
+func normalizeSig(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	inSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' || c == '\t' {
+			if !inSpace {
+				b.WriteByte(' ')
+				inSpace = true
+			}
+		} else {
+			b.WriteByte(c)
+			inSpace = false
+		}
+	}
+	return b.String()
+}
 
-func sortedStructKeys(m map[string]*extract.StructInfo) []string {
-	keys := make([]string, 0, len(m))
+// typesMatch compares two Lyric type strings with whitespace normalization.
+func typesMatch(a, b string) bool {
+	return sigMatch(a, b)
+}
+
+// --- sort helpers ---------------------------------------------------------
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		out = append(out, k)
 	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedIfaceKeys(m map[string]*extract.InterfaceInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedFuncKeys(m map[string]*extract.FuncInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedTypeDefKeys(m map[string]*extract.TypeDefInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedMethodKeys(m map[string]*extract.FuncInfo) []string {
-	return sortedFuncKeys(m)
+	sort.Strings(out)
+	return out
 }
 
 func sortedStringMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
+	out := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		out = append(out, k)
 	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(out)
+	return out
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func sortedFuncJSONKeys(m map[string]lyFuncJSON) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	return b
+	sort.Strings(out)
+	return out
 }
