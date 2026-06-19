@@ -170,7 +170,7 @@ func convertPackageJSON(raw *lyPackageJSON) *extract.PackageInfo {
 		si.Line = s.Line
 		si.IsClass = s.IsClass
 		for fn, ft := range s.Fields {
-			si.Fields[fn] = ft
+			si.SetField(fn, ft)
 		}
 		for mn, mf := range s.Methods {
 			si.Methods[mn] = convertFuncJSON(mf)
@@ -389,9 +389,8 @@ func GenerateLyLDDFile(pkgDir string) (outPath, content string, err error) {
 			keyword = "class"
 		}
 		b.WriteString(fmt.Sprintf("%s %s {\n", keyword, name))
-		fieldNames := sortedStringMapKeys(si.Fields)
-		for _, fn := range fieldNames {
-			b.WriteString(fmt.Sprintf("  %s: %s\n", fn, si.Fields[fn]))
+		for _, f := range extract.SortedFieldsByName(si.Fields) {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", f.Name, f.SignatureText))
 		}
 		b.WriteString("}\n")
 
@@ -491,9 +490,9 @@ func compareLyStructs(declared, actual *extract.PackageInfo, file, src string, r
 			r.add(SevError, file, src, fmt.Sprintf("struct/class %s declared in LDD but not found in source", name))
 			continue
 		}
-		for fn := range ds.Fields {
-			if _, ok := as.Fields[fn]; !ok {
-				r.add(SevError, file, src, fmt.Sprintf("%s.%s: field declared in LDD but not found in source", name, fn))
+		for _, f := range ds.Fields {
+			if !as.HasField(f.Name) {
+				r.add(SevError, file, src, fmt.Sprintf("%s.%s: field declared in LDD but not found in source", name, f.Name))
 			}
 		}
 		for mn := range ds.Methods {
@@ -598,8 +597,8 @@ func UpdateLyLDD(lddPath string) (added []string, err error) {
 		newDecls.WriteString("\n")
 		writeLyLocation(&newDecls, si.File, si.Line)
 		newDecls.WriteString(fmt.Sprintf("%s %s {\n", keyword, name))
-		for _, fn := range sortedStringMapKeys(si.Fields) {
-			newDecls.WriteString(fmt.Sprintf("  %s: %s\n", fn, si.Fields[fn]))
+		for _, f := range extract.SortedFieldsByName(si.Fields) {
+			newDecls.WriteString(fmt.Sprintf("  %s: %s\n", f.Name, f.SignatureText))
 		}
 		newDecls.WriteString("}\n")
 		for _, mn := range sortedMethodKeys(si.Methods) {

@@ -86,7 +86,7 @@ func extractFromFile(fset *token.FileSet, file *ast.File, info *extract.PackageI
 							for _, f := range t.Fields.List {
 								typStr := TypeString(f.Type)
 								for _, name := range f.Names {
-									si.Fields[name.Name] = typStr
+									si.SetField(name.Name, typStr)
 								}
 							}
 						}

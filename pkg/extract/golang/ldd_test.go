@@ -1,3 +1,6 @@
+// Tests for the v2 .go.lyric pipeline: ExtractGo, GenerateGo, UpdateGo,
+// VerifyGo. The v1 native-Go-source-as-LDD path is gone; this file replaces
+// the legacy LDD test suite.
 package golang_test
 
 import (
@@ -7,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/waywardgeek/lyre/pkg/extract/golang"
+	"github.com/waywardgeek/lyre/pkg/udd"
 )
 
 // sampleSource is a simple Go package used as test input.
@@ -50,114 +54,180 @@ func writeTempSource(t *testing.T, src string) string {
 	return dir
 }
 
-// TestGenerateLDDFile_OutputFormat checks that GenerateLDDFile produces a file
-// with the expected structure and key declarations.
-func TestGenerateLDDFile_OutputFormat(t *testing.T) {
+// --- ExtractGo --------------------------------------------------------------
+
+func TestExtractGo_StructAndMethods(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
+	p, err := golang.ExtractGo(dir)
 	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
+		t.Fatalf("ExtractGo: %v", err)
+	}
+	if p.Name != "shapes" {
+		t.Errorf("package name: want shapes, got %q", p.Name)
+	}
+	if len(p.ModuleSource) != 1 || p.ModuleSource[0] != "shapes.go" {
+		t.Errorf("ModuleSource: want [shapes.go], got %v", p.ModuleSource)
 	}
 
-	// Should be named after the package.
-	if !strings.HasSuffix(outPath, "shapes.go.lyric") {
-		t.Errorf("expected output path ending in shapes.go.lyric, got %s", outPath)
-	}
-
-	// Must have the build tag.
-	if !strings.Contains(content, "//go:build ignore") {
-		t.Error("missing //go:build ignore")
-	}
-
-	// Must have ldd directives.
-	if !strings.Contains(content, "//ldd:source") {
-		t.Error("missing //ldd:source")
-	}
-	if !strings.Contains(content, "//ldd:why") {
-		t.Error("missing //ldd:why")
-	}
-
-	// Must have struct, interface, typedef, function.
-	for _, want := range []string{"type Circle struct", "type Sizer interface", "type Scale", "func NewCircle"} {
-		if !strings.Contains(content, want) {
-			t.Errorf("content missing %q", want)
-		}
-	}
-
-	// Must NOT contain unexported names.
-	if strings.Contains(content, "unexported") {
-		t.Error("content should not contain unexported function")
-	}
-
-	// Must have index marker.
-	if !strings.Contains(content, "// --- index ---") {
-		t.Error("missing // --- index --- marker")
-	}
-}
-
-// TestRoundTrip generates a .go.lyric file and immediately parses it back;
-// the parsed PackageInfo should contain all the exported symbols.
-func TestRoundTrip(t *testing.T) {
-	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
-	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
-	}
-
-	// Write the generated file to disk so ParseLDDFile can read it.
-	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD file: %v", err)
-	}
-
-	info, meta, err := golang.ParseLDDFile(outPath)
-	if err != nil {
-		t.Fatalf("ParseLDDFile: %v", err)
-	}
-
-	// Meta should list source files.
-	if len(meta.Source) == 0 {
-		t.Error("ParseLDDFile: no source files in meta")
-	}
-
-	// Struct Circle must be present with its fields.
-	circle, ok := info.Structs["Circle"]
+	circle, ok := p.Structs["Circle"]
 	if !ok {
-		t.Fatal("struct Circle not found in parsed LDD")
+		t.Fatal("Circle struct missing")
 	}
-	for _, field := range []string{"Radius", "Color"} {
-		if _, ok := circle.Fields[field]; !ok {
-			t.Errorf("Circle missing field %s", field)
-		}
+	if circle.File != "shapes.go" || circle.Line == 0 {
+		t.Errorf("Circle file/line: want shapes.go:N, got %s:%d", circle.File, circle.Line)
+	}
+	if got, _ := circle.FieldSig("Radius"); got != "float64" {
+		t.Errorf("Circle.Radius signature: want float64, got %q", got)
+	}
+	if got, _ := circle.FieldSig("Color"); got != "string" {
+		t.Errorf("Circle.Color signature: want string, got %q", got)
 	}
 
-	// Interface Sizer must be present.
-	if _, ok := info.Interfaces["Sizer"]; !ok {
-		t.Error("interface Sizer not found in parsed LDD")
+	area, ok := circle.Methods["Area"]
+	if !ok {
+		t.Fatal("Circle.Area missing")
 	}
-
-	// Function NewCircle must be present.
-	if _, ok := info.Functions["NewCircle"]; !ok {
-		t.Error("function NewCircle not found in parsed LDD")
+	if area.SignatureText != "Area() float64" {
+		t.Errorf("Area signature: want %q, got %q", "Area() float64", area.SignatureText)
+	}
+	if area.Source == "" || !strings.HasPrefix(area.Source, "shapes.go:") {
+		t.Errorf("Area source: want shapes.go:N, got %q", area.Source)
 	}
 }
 
-// TestVerifyGoLDD_Clean verifies that a freshly generated LDD reports no errors
-// against the same source it was generated from.
-func TestVerifyGoLDD_Clean(t *testing.T) {
+func TestExtractGo_Interface(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
+	p, err := golang.ExtractGo(dir)
 	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
+		t.Fatalf("ExtractGo: %v", err)
+	}
+	sizer, ok := p.Interfaces["Sizer"]
+	if !ok {
+		t.Fatal("Sizer interface missing")
+	}
+	if sizer.Methods["Area"].SignatureText != "Area() float64" {
+		t.Errorf("Sizer.Area signature: got %q", sizer.Methods["Area"].SignatureText)
+	}
+	if sizer.Methods["Perimeter"].SignatureText != "Perimeter() float64" {
+		t.Errorf("Sizer.Perimeter signature: got %q", sizer.Methods["Perimeter"].SignatureText)
+	}
+}
+
+func TestExtractGo_TypedefAndFunction(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	p, err := golang.ExtractGo(dir)
+	if err != nil {
+		t.Fatalf("ExtractGo: %v", err)
+	}
+	scale, ok := p.TypeDefs["Scale"]
+	if !ok {
+		t.Fatal("Scale typedef missing")
+	}
+	if scale.Underlying != "int" {
+		t.Errorf("Scale underlying: want int, got %q", scale.Underlying)
+	}
+
+	nc, ok := p.Functions["NewCircle"]
+	if !ok {
+		t.Fatal("NewCircle function missing")
+	}
+	if nc.SignatureText != "NewCircle(radius float64, color string) *Circle" {
+		t.Errorf("NewCircle signature: got %q", nc.SignatureText)
+	}
+}
+
+func TestExtractGo_SkipsUnexported(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	p, err := golang.ExtractGo(dir)
+	if err != nil {
+		t.Fatalf("ExtractGo: %v", err)
+	}
+	if _, ok := p.Functions["unexported"]; ok {
+		t.Error("unexported function should not appear in PackageInfo")
+	}
+}
+
+// --- GenerateGo + round-trip through udd.Parse -----------------------------
+
+func TestGenerateGo_OutputFormat(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	outPath, content, err := golang.GenerateGo(dir)
+	if err != nil {
+		t.Fatalf("GenerateGo: %v", err)
+	}
+	if !strings.HasSuffix(outPath, "shapes.go.lyric") {
+		t.Errorf("output path: want suffix shapes.go.lyric, got %s", outPath)
+	}
+	for _, want := range []string{
+		"module shapes",
+		"source: [\"shapes.go\"]",
+		"struct Circle",
+		"field Radius: float64",
+		"method Area() float64",
+		"interface Sizer",
+		"typedef Scale: int",
+		"func NewCircle(radius float64, color string) *Circle",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("generated content missing %q\n--- content ---\n%s", want, content)
+		}
+	}
+	// Must NOT contain anything referring to unexported names or legacy //ldd:.
+	for _, bad := range []string{"unexported", "//ldd:", "//go:build", "// --- index ---"} {
+		if strings.Contains(content, bad) {
+			t.Errorf("generated content should not contain %q", bad)
+		}
+	}
+}
+
+func TestGenerateGo_RoundTripsThroughUDD(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	_, content, err := golang.GenerateGo(dir)
+	if err != nil {
+		t.Fatalf("GenerateGo: %v", err)
+	}
+	p, err := udd.Parse(content, "shapes.go.lyric")
+	if err != nil {
+		t.Fatalf("udd.Parse: %v\n--- content ---\n%s", err, content)
+	}
+	if p.Name != "shapes" {
+		t.Errorf("parsed name: want shapes, got %q", p.Name)
+	}
+	if _, ok := p.Structs["Circle"]; !ok {
+		t.Error("Circle missing after round-trip")
+	}
+	if _, ok := p.Interfaces["Sizer"]; !ok {
+		t.Error("Sizer missing after round-trip")
+	}
+	if _, ok := p.Functions["NewCircle"]; !ok {
+		t.Error("NewCircle missing after round-trip")
+	}
+	if _, ok := p.TypeDefs["Scale"]; !ok {
+		t.Error("Scale missing after round-trip")
+	}
+}
+
+// --- VerifyGo --------------------------------------------------------------
+
+func generateAndWrite(t *testing.T, dir string) string {
+	t.Helper()
+	outPath, content, err := golang.GenerateGo(dir)
+	if err != nil {
+		t.Fatalf("GenerateGo: %v", err)
 	}
 	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD file: %v", err)
+		t.Fatalf("writing .go.lyric: %v", err)
 	}
+	return outPath
+}
 
-	result, err := golang.VerifyGoLDD(outPath)
+func TestVerifyGo_Clean(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	outPath := generateAndWrite(t, dir)
+	result, err := golang.VerifyGo(outPath)
 	if err != nil {
-		t.Fatalf("VerifyGoLDD: %v", err)
+		t.Fatalf("VerifyGo: %v", err)
 	}
-
 	if result.ErrorCount() > 0 {
 		for _, f := range result.Findings {
 			if f.Severity == golang.SevError {
@@ -167,29 +237,19 @@ func TestVerifyGoLDD_Clean(t *testing.T) {
 	}
 }
 
-// TestVerifyGoLDD_MissingFunction checks that VerifyGoLDD catches a function
-// declared in LDD that no longer exists in source.
-func TestVerifyGoLDD_MissingFunction(t *testing.T) {
+func TestVerifyGo_MissingFunction(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
-	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
-	}
+	outPath := generateAndWrite(t, dir)
 
-	// Remove NewCircle from source — LDD still declares it.
 	stripped := strings.ReplaceAll(sampleSource, "func NewCircle(radius float64, color string) *Circle { return nil }", "")
 	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(stripped), 0644); err != nil {
 		t.Fatalf("writing stripped source: %v", err)
 	}
-	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD file: %v", err)
-	}
 
-	result, err := golang.VerifyGoLDD(outPath)
+	result, err := golang.VerifyGo(outPath)
 	if err != nil {
-		t.Fatalf("VerifyGoLDD: %v", err)
+		t.Fatalf("VerifyGo: %v", err)
 	}
-
 	found := false
 	for _, f := range result.Findings {
 		if strings.Contains(f.Message, "NewCircle") {
@@ -197,33 +257,23 @@ func TestVerifyGoLDD_MissingFunction(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected finding about NewCircle, got none")
+		t.Errorf("expected finding about NewCircle, got: %v", result.Findings)
 	}
 }
 
-// TestVerifyGoLDD_UndocumentedExport checks that VerifyGoLDD catches an
-// exported function present in source but absent from the LDD file.
-func TestVerifyGoLDD_UndocumentedExport(t *testing.T) {
+func TestVerifyGo_UndocumentedExport(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
-	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
-	}
+	outPath := generateAndWrite(t, dir)
 
-	// Add a new exported function to source that the LDD doesn't know about.
 	extended := sampleSource + "\nfunc Describe(c *Circle) string { return \"\" }\n"
 	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(extended), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
-	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD file: %v", err)
-	}
 
-	result, err := golang.VerifyGoLDD(outPath)
+	result, err := golang.VerifyGo(outPath)
 	if err != nil {
-		t.Fatalf("VerifyGoLDD: %v", err)
+		t.Fatalf("VerifyGo: %v", err)
 	}
-
 	found := false
 	for _, f := range result.Findings {
 		if strings.Contains(f.Message, "Describe") {
@@ -231,30 +281,25 @@ func TestVerifyGoLDD_UndocumentedExport(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected finding about undocumented Describe, got none")
+		t.Error("expected finding about undocumented Describe")
 	}
 }
 
-// TestVerifyGoLDD_FieldTypeMismatch checks that VerifyGoLDD catches a type
-// mismatch for a struct field.
-func TestVerifyGoLDD_FieldTypeMismatch(t *testing.T) {
+func TestVerifyGo_FieldTypeMismatch(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
+	outPath, content, err := golang.GenerateGo(dir)
 	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
+		t.Fatalf("GenerateGo: %v", err)
 	}
-
-	// Corrupt the LDD: change Circle.Radius from float64 to int.
-	corrupted := strings.Replace(content, "Radius float64", "Radius int", 1)
+	corrupted := strings.Replace(content, "field Radius: float64", "field Radius: int", 1)
 	if err := os.WriteFile(outPath, []byte(corrupted), 0644); err != nil {
-		t.Fatalf("writing corrupted LDD: %v", err)
+		t.Fatalf("writing corrupted .go.lyric: %v", err)
 	}
 
-	result, err := golang.VerifyGoLDD(outPath)
+	result, err := golang.VerifyGo(outPath)
 	if err != nil {
-		t.Fatalf("VerifyGoLDD: %v", err)
+		t.Fatalf("VerifyGo: %v", err)
 	}
-
 	found := false
 	for _, f := range result.Findings {
 		if f.Severity == golang.SevError && strings.Contains(f.Message, "Radius") {
@@ -262,122 +307,128 @@ func TestVerifyGoLDD_FieldTypeMismatch(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected error about Radius type mismatch, got none")
+		t.Errorf("expected error about Radius type mismatch; got: %v", result.Findings)
 	}
 }
 
-// TestUpdateGoLDD_AddsNewExport verifies that UpdateGoLDD appends a declaration
-// for a new exported function that was added to source after the LDD was generated.
-func TestUpdateGoLDD_AddsNewExport(t *testing.T) {
-	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
-	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
-	}
-	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD: %v", err)
-	}
+// --- UpdateGo --------------------------------------------------------------
 
-	// Add a new exported function to source.
+func TestUpdateGo_AddsNewExport(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	outPath := generateAndWrite(t, dir)
+
 	extended := sampleSource + "\nfunc Describe(c *Circle) string { return \"\" }\n"
 	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(extended), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
 
-	added, err := golang.UpdateGoLDD(outPath)
+	added, err := golang.UpdateGo(outPath)
 	if err != nil {
-		t.Fatalf("UpdateGoLDD: %v", err)
+		t.Fatalf("UpdateGo: %v", err)
 	}
-
-	// Should report adding Describe.
-	found := false
+	foundInAdded := false
 	for _, name := range added {
 		if strings.Contains(name, "Describe") {
-			found = true
+			foundInAdded = true
 		}
 	}
-	if !found {
+	if !foundInAdded {
 		t.Errorf("expected Describe in added list, got: %v", added)
 	}
 
-	// File should now contain Describe.
 	updated, _ := os.ReadFile(outPath)
-	if !strings.Contains(string(updated), "Describe") {
-		t.Error("updated LDD file should contain Describe declaration")
+	if !strings.Contains(string(updated), "func Describe(c *Circle) string") {
+		t.Errorf("updated .go.lyric should contain Describe declaration; got:\n%s", updated)
 	}
 }
 
-// TestUpdateGoLDD_AlreadyUpToDate verifies that UpdateGoLDD returns no additions
-// when the LDD is already complete.
-func TestUpdateGoLDD_AlreadyUpToDate(t *testing.T) {
+func TestUpdateGo_AlreadyUpToDate(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
-	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
-	}
-	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD: %v", err)
-	}
+	outPath := generateAndWrite(t, dir)
 
-	added, err := golang.UpdateGoLDD(outPath)
+	added, err := golang.UpdateGo(outPath)
 	if err != nil {
-		t.Fatalf("UpdateGoLDD: %v", err)
+		t.Fatalf("UpdateGo: %v", err)
 	}
 	if len(added) != 0 {
-		t.Errorf("expected no additions for up-to-date LDD, got: %v", added)
+		t.Errorf("expected no additions, got: %v", added)
 	}
 }
 
-// TestUpdateGoLDD_PreservesHumanWhy verifies that UpdateGoLDD preserves the
-// //ldd:why annotation after update.
-func TestUpdateGoLDD_PreservesHumanWhy(t *testing.T) {
+func TestUpdateGo_PreservesHumanProse(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
-	outPath, content, err := golang.GenerateLDDFile(dir)
-	if err != nil {
-		t.Fatalf("GenerateLDDFile: %v", err)
+	outPath := generateAndWrite(t, dir)
+
+	// Splice in module-level why + a doc block + a per-decl why on Circle.
+	raw, _ := os.ReadFile(outPath)
+	annotated := strings.Replace(string(raw),
+		"module shapes\n",
+		"module shapes\n  why: \"geometry primitives\"\n", 1)
+	annotated = strings.Replace(annotated,
+		"struct Circle\n    source:",
+		"struct Circle\n    source:", 1)
+	annotated = strings.Replace(annotated,
+		"struct Circle\n",
+		"struct Circle\n", 1)
+	// Inject a per-decl why on Circle: find the source: line under struct Circle and append a why:.
+	annotated = strings.Replace(annotated,
+		"struct Circle\n    source:",
+		"struct Circle\n    why: \"a flat round geometric primitive\"\n    source:", 1)
+	// Add per-field doc on Radius.
+	annotated = strings.Replace(annotated,
+		"field Radius: float64\n",
+		"field Radius: float64\n      doc: \"in scene units\"\n", 1)
+	if err := os.WriteFile(outPath, []byte(annotated), 0644); err != nil {
+		t.Fatalf("writing annotated .go.lyric: %v", err)
 	}
 
-	// Set a human-written why.
-	content = strings.Replace(content, `//ldd:why ""`, `//ldd:why "geometry primitives"`, 1)
-	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-		t.Fatalf("writing LDD: %v", err)
-	}
-
-	// Add new symbol to trigger an update.
+	// Trigger an update by adding a new symbol to the source.
 	extended := sampleSource + "\nfunc Clone(c *Circle) *Circle { return nil }\n"
 	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(extended), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
-
-	if _, err := golang.UpdateGoLDD(outPath); err != nil {
-		t.Fatalf("UpdateGoLDD: %v", err)
+	if _, err := golang.UpdateGo(outPath); err != nil {
+		t.Fatalf("UpdateGo: %v", err)
 	}
 
 	updated, _ := os.ReadFile(outPath)
-	if !strings.Contains(string(updated), `//ldd:why "geometry primitives"`) {
-		t.Error("UpdateGoLDD should preserve the human-written //ldd:why annotation")
+	updatedStr := string(updated)
+	for _, want := range []string{
+		`why: "geometry primitives"`,
+		`why: "a flat round geometric primitive"`,
+		`doc: "in scene units"`,
+		`func Clone(c *Circle) *Circle`,
+	} {
+		if !strings.Contains(updatedStr, want) {
+			t.Errorf("update lost or failed to add %q\n--- file ---\n%s", want, updatedStr)
+		}
 	}
 }
 
-func TestParseLDDMeta(t *testing.T) {
-	src := `//go:build ignore
+func TestUpdateGo_RefreshesPositionsAndSource(t *testing.T) {
+	dir := writeTempSource(t, sampleSource)
+	outPath := generateAndWrite(t, dir)
 
-//ldd:source foo.go, bar.go
-//ldd:why "handles request routing"
+	// Re-write the source with NewCircle pushed further down.
+	shifted := "// pad\n// pad\n// pad\n// pad\n// pad\n" + sampleSource
+	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(shifted), 0644); err != nil {
+		t.Fatalf("writing shifted source: %v", err)
+	}
+	if _, err := golang.UpdateGo(outPath); err != nil {
+		t.Fatalf("UpdateGo: %v", err)
+	}
 
-package mypackage
-`
-	meta := golang.ParseLDDMeta(src)
-	if meta.Lang != "go" {
-		t.Errorf("expected lang=go, got %s", meta.Lang)
+	// Parse the resulting file and confirm NewCircle now points deeper.
+	raw, _ := os.ReadFile(outPath)
+	p, err := udd.Parse(string(raw), outPath)
+	if err != nil {
+		t.Fatalf("udd.Parse: %v", err)
 	}
-	if len(meta.Source) != 2 {
-		t.Errorf("expected 2 source files, got %d: %v", len(meta.Source), meta.Source)
+	nc, ok := p.Functions["NewCircle"]
+	if !ok {
+		t.Fatal("NewCircle missing after update")
 	}
-	if meta.Source[0] != "foo.go" || meta.Source[1] != "bar.go" {
-		t.Errorf("unexpected source files: %v", meta.Source)
-	}
-	if meta.Why != "handles request routing" {
-		t.Errorf("unexpected why: %q", meta.Why)
+	if nc.Line <= 5 {
+		t.Errorf("NewCircle line should have shifted past the 5-line pad; got line %d", nc.Line)
 	}
 }

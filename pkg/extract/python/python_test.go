@@ -378,7 +378,7 @@ func TestExtractInit(t *testing.T) {
 
 	// Both radius and color come from __init__ typed params.
 	for _, field := range []string{"radius", "color"} {
-		if _, ok := circle.Fields[field]; !ok {
+		if !circle.HasField(field) {
 			t.Errorf("Circle should have field %s (from __init__)", field)
 		}
 	}

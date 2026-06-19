@@ -1,0 +1,685 @@
+# Lyre Rich-Documentation Upgrade Plan (v2)
+
+*Author: Hewitt (CodeRhapsody on Opus 4.7) · Reviewer: Bill Cox · 2026-06-19*
+
+*Supersedes v1 (native-parseable approach). v1 made `.lyric` files be valid native source in their respective language. v2 abandons that constraint — `.lyric` files become a small declarative DSL whose payload lines are verbatim native-language signature text treated as opaque strings. See "Why the rewrite" below.*
+
+## Mandatory pre-reads (every instance, every session)
+
+Before doing any sprint work, read these in order:
+
+1. **`~/projects/lyric/cr/docs/understanding-driven-development.md`** — the
+   methodology. UDD is what this whole sprint is in service of. The plan below
+   only makes sense in that frame.
+2. **`~/projects/lyre/pkg/udd/spec.md`** — the canonical `.lyric` v2 format
+   spec. Locked grammar, locked defaults.
+3. **This plan**, including the Amendments section at the bottom for every
+   decision made during the sprint.
+
+If the methodology doc and the format spec disagree, the methodology doc wins —
+update the spec to match. The methodology is the long-lived artifact; the spec
+is implementation detail in its service.
+
+## Core architectural principle: documentation lives in the `.lyric` file, not in source
+
+UDD documentation — `why:`, `doc "..."` blocks, `invariant "..."` blocks, per-field `doc:`, per-method `why:` — lives **only in the `.lyric` file**, never in the native source. Native source files (`.go`, `.ts`, `.ly`, `.py`) stay clean: minimal language-idiomatic doc comments only where they serve native tooling (godoc tooltips, JSDoc IDE hovers, etc.), and nothing else.
+
+Consequences:
+
+- **Extractors read signatures only.** They do not scrape source-side `// why:` or `// doc "Architecture"` comments. Those don't exist in source by policy.
+- **The file is the single source of truth for understanding.** No duplication, no drift between source comments and prose.
+- **Migration (Phase 6) only converts existing `.lyric` files.** It does not crawl source code looking for hand-written `// why:` comments to import — those were never the right place for them.
+- **Authors write rich content in one place** (the file) and refresh signatures via `lyre update`. Two artifacts, one canonical location per concern.
+
+This was implicit in v1 but became muddled because instances would write `// why:` comments in source thinking it was idiomatic. v2 makes it explicit: the source file is for code; the file is for understanding.
+
+## Methodology heritage
+
+This is **Grok-Driven Development**, renamed. The original `.grok` files used a deliberately-designed DSL — a typed pseudo-code language designed as a superset of what understanding files need (see `docs/grok-driven-development.md` and `docs/grok-language.md` in the original GDD docs). The Lyre/`.lyric` rename drifted from that original design into native-parseable files. This plan restores the original DSL approach with one refinement: signatures inside the DSL are **verbatim native text** (not pseudo-code), treated as opaque strings.
+
+## Goal
+
+Bring all four currently-supported languages (Go, TypeScript, Lyric, Python) to documentation parity with the legacy `.forge` format. Canonical reference: `~/projects/lyric/legacy/go-compiler/pkg/checker/checker.forge` (770 lines, full rich format).
+
+**Primary driver**: Project Leadfoot (Go backend on Boq, TypeScript frontend). Those two paths must be best-in-class. Lyric and Python are nice-to-have.
+
+## Why the rewrite (TL;DR of the architectural pivot)
+
+The native-parseable constraint was the root cause of every awkwardness in v1:
+
+- The valuable content (`//ldd:why`, doc blocks, invariants, per-method `why:`, per-field semantics) is all custom comment-encoded DSL that the native parser ignores. We were paying for *both* a native parser *and* a custom comment parser per language. Worst of both worlds.
+- Every rich-doc feature in the 8-section inventory had to be smuggled through `//` comments in 4 different ways, since Go/TS/Python have no annotation syntax for `why:` on a method or `doc:` on a field.
+- The Lyric path was particularly perverse: shell out to a compiled Lyric binary to parse a `.ly.lyric` file that's mostly hand-written comments the Lyric compiler ignores. Three parsers, one source of truth.
+- Cross-language inconsistency was total. `.go.lyric`, `.ts.lyric`, `.ly.lyric` look nothing alike at the surface.
+
+The fix: stop trying to make the file be valid native source. Make it a small, purpose-built DSL whose framing is shared across all languages and whose signature payloads are verbatim native text. The native parsers stay — but only on the *source* side, where they belong.
+
+## The design (sketch)
+
+The `.lyric` v2 format is indentation-significant, YAML-ish, with heredoc `"""..."""` for prose. **Payload lines are opaque native-language text** — Lyre never parses them, only string-matches them against the extractor's output.
+
+```
+module checker
+  source: ["checker.ly", "checker_helpers.ly"]
+  why: "Three-phase type checker with expression annotation."
+
+  doc "Architecture":
+    """
+    Phase 0 (preregister_type_names): walks all blocks ...
+    Phase 1 (register_lyric_block): walks all interfaces ...
+    Phase 2 (check_lyric_block_bodies): walks function bodies ...
+    """
+
+  invariant "Multi-Phase Checking":
+    verified-by: TestInvariant_Checker_ThreePhaseOrdering
+    """
+    Phase 0 MUST complete on ALL blocks before ANY Phase 1 begins.
+    Phase 1 MUST complete on ALL blocks before ANY Phase 2 begins.
+    """
+
+  invariant "AST Expr Pointer Stability":
+    procedural # cannot be mechanically tested
+    """
+    Phase 2 must use `for i := range block.Functions` with
+    `&block.Functions[i]` — never range-copy, because checkExpr
+    annotates ResolvedType on Expr nodes reached through the
+    FuncDecl's Body pointer.
+    """
+
+  class Checker
+    source: checker.ly:147
+    why: "Tracks nesting depth inside loops for break/continue validation."
+    field errors: [string]
+    field iface_decls: Dict<Sym, InterfaceDecl>
+      doc: "Used during Phase 1.5 to link impl blocks across blocks."
+    method CheckFile(self, file: File)
+      source: checker.ly:4695
+      why: "Primary entry point. Registers types, then checks bodies."
+    method CheckFiles(self, files: [File])
+      source: checker.ly:2505
+      why: "CRITICAL: use this for multi-file. CheckFile is per-file only."
+
+  struct Type
+    source: checker.ly:52
+    field bits: i32
+      doc: "for Int/Uint/Float — width in bits"
+    field kind: TypeKind
+    field type_args: [Type]
+      doc: "for generic class/struct instances (e.g. Dict<V>)"
+```
+
+**Key properties:**
+
+1. **Signatures are verbatim native text.** The `field errors: [string]` line above is *the exact Lyric source text* of that field. For Go it would be `field errors []error`. For TS, `field errors: string[]`. The extractor produces this text from source via the native parser's pretty-printer (`go/printer`, `node.getText()`, etc.). Lyre never parses it — it does whitespace-normalized string equality.
+2. **`.lyric` framing is identical across all languages.** `module`, `class`, `struct`, `interface`, `field`, `method`, `func`, `why:`, `doc "..."`, `invariant "..."`, `source:`, `verified-by:`, `procedural` — same in every language.
+3. **The file extension still carries the routing hint.** `.go.lyric` means "`.lyric` file describing Go source"; tells Lyre which extractor to invoke for verification. The outer `.lyric` is the Understanding-Driven Development declaration file. The inner extension is now metadata, not a syntax claim.
+4. **The DSL parser is small.** ~400 lines of Go. Indent-significant block structure, recognized keys, heredoc strings, opaque payload lines. Closer to a config-file parser than a programming-language parser.
+
+## Success criteria (unchanged from v1)
+
+1. All 8 rich sections (below) can be authored in any `.lyric` file in any of the 4 languages, persist across `lyre update`, and round-trip with zero loss.
+2. `lyre lint` flags `.lyric` files missing rich sections.
+3. `lyre gen --rich` scaffolds a template with rich-section headers as TODOs.
+4. Round-trip tests for each language prove every rich section survives gen → update → reparse.
+5. A backfilled `checker.ly.lyric` matches `checker.forge` in content density, as proof of method.
+6. The UDD methodology doc documents the canonical template.
+
+## The 8 rich sections (the feature inventory)
+
+| # | Section | syntax |
+|---|---|---|
+| 1 | Module-level `why:` | `why: "..."` at module scope |
+| 2 | `doc "Title":` blocks | `doc "Title":` then heredoc |
+| 3 | `invariant "Title":` blocks | `invariant "Title":` then heredoc, with optional `procedural` flag |
+| 4 | Per-decl `why:` | `why: "..."` inside class/struct/method/field block |
+| 5 | Per-field `doc:` | `doc: "..."` inside `field` block |
+| 6 | Bugs-this-caught lists | Free prose inside the relevant `invariant` block's heredoc |
+| 7 | `procedural` marker | Bare keyword inside `invariant` block |
+| 8 | `source:` binding | `source: file:line` per decl; `source: [files...]` at module scope |
+
+All 8 are first-class syntax. No comment smuggling.
+
+## The four extractors become read-only
+
+After the pivot, each extractor has exactly one job: **read source, produce an in-memory `PackageInfo` populated with native-syntax signature strings**.
+
+| Path | Lives | Job |
+|---|---|---|
+| **Go** | `pkg/extract/golang/extract.go` | `go/ast` → `PackageInfo` with signatures from `go/printer` |
+| **TypeScript** | `pkg/extract/typescript/extract_api.js` + `typescript.go` | tsc → JSON → `PackageInfo` with signatures from `node.getText()` |
+| **Lyric** | `~/projects/lyric/tools/extract_api.ly` + `lyric.go` | extract_api → JSON → `PackageInfo` with verbatim source text |
+| **Python** | `pkg/extract/python/extract_api.py` + `python.go` | ast → JSON → `PackageInfo` |
+
+A **single shared writer** in `pkg/udd/` consumes `PackageInfo` and emits files. A **single shared parser** in `pkg/udd/` consumes files and produces `PackageInfo`. Verification is `PackageInfo` (from source) vs `PackageInfo` (from `.lyric` v2 format) — same data type, comparable by string equality on signatures plus structural equality on metadata.
+
+This is the architectural win: per-language work shrinks to source-side extraction only. Emit, parse, round-trip preservation all live in one place.
+
+## Implementation phases
+
+```
+Phase 0 (build baseline)
+   │
+   ▼
+Phase 1 (shared data model: add rich fields)
+   │
+   ▼
+Phase 2 (`.lyric` parser + writer) ◀── central, blocking
+   │
+   ├──▶ Phase 3a (Go extractor adaptation) ┐
+   │ │
+   ├──▶ Phase 3b (TS extractor adaptation) ├──▶ Phase 6 (migration)
+   │ │ │
+   ├──▶ Phase 3c (Lyric extractor adaptation) │ ▼
+   │ │ Phase 7 (docs + backfill)
+   └──▶ Phase 3d (Python extractor adaptation) ┘
+   │
+   ├──▶ Phase 4 (lyre lint) ◀── parallel after Phase 2
+   │
+   └──▶ Phase 5 (lyre gen --rich) ◀── parallel after Phase 2
+```
+
+### Phase 0 — Restore build baseline (1–2h, prerequisite)
+
+`go build ./...` from `~/projects/lyre/` currently fails: `cmd/lyre/main.go` references `cmdFmt` (line 81) and `runUpdate` (line 231) which are undefined. There are orphan references from a partial in-flight refactor.
+
+- `git log -p cmd/lyre/main.go | head -200` to understand recent history.
+- Restore or write the missing symbols. Likely `cmdFmt` was a handler for `lyre fmt` against plain `.lyric` files, and `runUpdate` was the legacy plain-`.lyric` update path.
+- Get `go test ./...` green. Capture baseline pass count as regression yardstick.
+
+### Phase 1 — Extend shared data model (2–3h)
+
+Same change as v1 plan. `pkg/extract/extract.go` gets:
+
+```go
+type PackageInfo struct {
+    // ... existing
+    ModuleWhy string
+    Docs []DocBlock
+    Invariants []Invariant
+}
+
+type DocBlock struct {
+    Title string
+    Content string
+}
+
+type Invariant struct {
+    Title string
+    Content string
+    Procedural bool
+    VerifiedBy []string // test names
+}
+
+type StructInfo struct {
+    // ... existing
+    Why string
+    Source string // "file:line"
+    per-field doc map[string]string
+}
+
+type InterfaceInfo struct { /* parallel additions */ }
+type FuncInfo struct { /* + Why, Source */ }
+type TypeDefInfo struct { /* + Why */ }
+```
+
+Signatures themselves continue to live in existing fields (`Fields map[string]string` where the value is the verbatim type text; method signatures rebuilt from `FuncInfo`).
+
+**Test**: round-trip a populated `PackageInfo` through JSON.
+
+### Phase 2 — `.lyric` parser + writer (2–3 days, central work)
+
+The new heart of Lyre. Lives at `pkg/udd/`.
+
+**Inherits from Phase 1**: per-field doc lives on `extract.FieldInfo.Doc`, not
+on a separate `per-field doc` map. Phase 2's writer should therefore emit `doc:`
+as an *inner key of the `field` block*, e.g.:
+
+```
+field iface_decls: Dict<Sym, InterfaceDecl>
+  doc: "Used during Phase 1.5 to link impl blocks across blocks."
+```
+
+…and the parser should attach the inner `doc:` value to the surrounding
+`FieldInfo` it just built. The `populatedPackage()` fixture in
+`pkg/extract/extract_test.go` is the canonical worked example of every
+rich-doc field the writer must round-trip.
+
+**`pkg/udd/spec.md`** — the grammar specification. Indent-significant. Recognized block heads: `module`, `class`, `struct`, `interface`, `enum`, `field`, `method`, `func`, `doc`, `invariant`. Recognized inline keys: `why:`, `source:`, `doc:`, `verified-by:`, `procedural` (bare), `fields:`, `methods:`. Heredoc strings via `"""..."""`. Payload lines (anything that isn't a recognized key) are opaque strings.
+
+**`pkg/udd/parser.go`** — reads `.lyric` text → `*extract.PackageInfo`. Tokenizer is line-based (split on newline, then indent-counted). Parser is a small recursive descent over the block structure.
+
+**`pkg/udd/writer.go`** — `*extract.PackageInfo` → `.lyric` text. Deterministic key ordering, deterministic whitespace, fixed 2-space indent.
+
+**Round-trip invariant**: for any `PackageInfo p`, `Parse(Write(p))` is structurally equal to `p`. Tested with property-style coverage in `parser_test.go`.
+
+**Round-trip-preserving update**: `Update(file)` reads existing `.lyric` v2 format, regenerates from source, merges (source wins on signatures, wins on `why`/`doc`/`invariant` content). The format makes this straightforward — every section is a structured block, not an opaque comment soup.
+
+**Tests:**
+- Spec-by-example: 20+ small snippets covering every recognized construct, each with expected `PackageInfo`.
+- Round trip: parse → write → parse → structural equal.
+- Error recovery: malformed produces actionable error messages with line numbers.
+
+### Phase 3 — Per-language extractor adaptation (≤1 day each, parallelizable)
+
+Each language extractor becomes signatures-only. Per the core principle, extractors do **not** look at source-side comments. Job: parse source → produce `PackageInfo` populated with names, kinds, and verbatim native-text signatures.
+
+This is a *simplification* of every existing extractor — we delete code, not add it. Doc/comment-handling logic in `golang/ldd.go`, `typescript.go`, `lyric.go`, `python.go` all goes away. What remains is structural: classes, structs, interfaces, methods, functions, type aliases, and their signature strings.
+
+**3a Go** (½ day): in `golang/ldd.go`, replace `GenerateLDDFile`/`UpdateGoLDD`/`VerifyGoLDD` with a single `ExtractGo(srcDir) → *PackageInfo`. Signature strings via `go/printer`. Delete all `Doc` field plumbing.
+
+**3b TypeScript** (½ day): in `extract_api.js`, strip the `getJSDoc()` calls — we don't need them. `typescript.go` becomes pure JSON → `PackageInfo`. Delete update/emit code.
+
+**3c Lyric** (1 day): extend `~/projects/lyric/tools/extract_api.ly` to emit verbatim source spans for each decl (AST has `Span`; just slice source text). JSON contract gains a `source_text` field per decl. `lyric.go` becomes pure JSON → `PackageInfo`. **Open question**: does rebuilding `extract_api` require touching `lyric.stable`? Verify before starting.
+
+**3d Python** (½ day, lowest priority): same pattern as TS.
+
+**Per-language tests**: write small native source (no UDD comments), run extractor, assert signature strings match what's in the source (modulo whitespace).
+
+### Phase 4 — `lyre lint` (3h, parallel after Phase 2)
+
+Same warnings as v1 plan (`W001`–`W008`), but easier to implement because rich sections are first-class constructs, not regex-matched comments.
+
+```
+W001 empty module-level why:
+W002 no doc "Architecture" block
+W003 no invariant blocks on a module with ≥1 class with ≥3 methods
+W004 class/struct with ≥4 methods and no per-method why:
+W005 struct with ≥3 fields and ≥1 enum-typed field, no per-field doc
+W006 invariant without verified-by: AND without procedural marker
+W007 verified-by: references test that doesn't exist
+W008 unfilled TODO placeholder
+```
+
+Tests in `pkg/lint/lint_test.go`.
+
+### Phase 5 — `lyre gen --rich` (1–2h, parallel after Phase 2)
+
+Extend `cmdGen` to accept `--rich`. When set, scaffolds an file with `doc "Architecture":` and `invariant "TODO":` placeholders, plus `why: "TODO"` on every emitted decl. The TODOs trigger `lyre lint W008`, forcing the author to fill or delete them.
+
+### Phase 6 — Migration script (½ day)
+
+A one-shot Go program at `cmd/lyre-migrate/main.go` that converts existing `.lyric` files (native-parseable format) to format.
+
+- **Only reads existing `.lyric` files.** Does not crawl source code for hand-written doc comments — per the core principle, those aren't a legitimate source of UDD content.
+- Extracts whatever rich content is present in the v1 `.lyric` file: `//ldd:why` strings (legacy comment-encoded format from v1), hand-written `## Invariants` comment blocks, the auto-generated index zone (discarded — regenerated from source).
+- Emits via `pkg/udd/writer.go`.
+- Leaves a `# MIGRATED FROM v1 — review hand-curated sections` header so a human knows to verify.
+- One-shot tool; can be deleted from the repo after the cutover.
+
+Run against all existing `.go.lyric`, `.ts.lyric`, `.ly.lyric`, `.py.lyric` files in `~/projects/lyric/src/` and Lyre's own dogfood files (`pkg/*/*.go.lyric`).
+
+Shrinks to ½ day (from 1 day in v1) because we don't have to parse source-side comment soup.
+
+### Phase 7 — Documentation and backfill (2–4h)
+
+1. Write `~/projects/lyre/cr/docs/pkg/udd/spec.md` — the canonical grammar with examples.
+2. Update `~/projects/lyric/cr/docs/understanding-driven-development.md`:
+   - Document the format with `checker.forge` cited as the rich-content reference.
+   - Note the GDD heritage — restore the original Grok-Driven Development design intent.
+   - Mark the native-parseable approach as superseded.
+3. Hand-backfill `~/projects/lyric/src/checker/checker.ly.lyric` from `checker.forge` content. Run `lyre verify` and `lyre lint` against it; both must be clean.
+4. **Don't backfill the other 11 `src/*.ly.lyric` files in this sprint.** Separate, parallelizable per-file work.
+
+## Estimated effort
+
+- Phase 0 (build baseline): 1–2h
+- Phase 1 (data model): 2–3h
+- Phase 2 (`.lyric` parser+writer): 2–3 days
+- Phase 3a (Go): ½ day
+- Phase 3b (TS): ½ day
+- Phase 3c (Lyric): 1 day
+- Phase 3d (Python): ½ day (defer-able)
+- Phase 4 (lint): 3h
+- Phase 5 (gen --rich): 1–2h
+- Phase 6 (migration): ½ day
+- Phase 7 (docs + backfill): 2–4h
+
+**Total**: ~6–8 working days single-threaded. With three parallel agents for 3a/3b/3c after Phase 2 lands: ~4–5 wall-clock days.
+
+**Compared to v1**: ~40% less total work. The savings come from two sources: (a) per-language emit/update/round-trip collapsing into one shared writer, and (b) extractors becoming signatures-only because UDD documentation lives exclusively in the file.
+
+## Risks and open questions
+
+1. **`extract_api` build path for Lyric**. Need to confirm rebuilding `~/projects/lyric/tools/extract_api` from `extract_api.ly` doesn't require touching `lyric.stable`. If it does, Phase 3c is blocked or out of scope; Lyric source files would stay on the v1 format until the build path is unblocked. Verify before starting Phase 3c.
+
+2. **`.lyric` v2 syntax design freeze**. The sketch above is a starting point. Spend the first hours of Phase 2 producing `pkg/udd/spec.md` and locking the grammar before writing the parser. Specifically: indent vs braces, heredoc syntax, comment syntax (`#` is shown above; could be `//`), key ordering rules.
+
+3. **Migration fidelity**. Phase 6's lossy v1-to-v2 converter will miss some hand-written content if instances used non-standard comment patterns. Mitigation: the `# MIGRATED FROM v1` header forces a human review pass. Accept some content loss in migration; recover via the rich rewrite Phase 7 establishes the template for.
+
+4. **Editor support regression**. Loss of `.go.lyric` syntax highlighting in IDEs. Mitigation: write a simple `.lyric` syntax mode for the editors Bill uses (VS Code, vim, Emacs as needed). Low priority; defer.
+
+5. **`source: file:line` drift**. Line numbers in go stale fast as source edits move things around. Two options: (a) accept staleness, refresh on `lyre update`; (b) elide line numbers, keep file references only. v1 had this same issue (Zone 2's location comments); not new. Decision: keep on `update`, accept staleness between updates, never use as ground truth.
+
+6. **Whitespace normalization for signature comparison**. "func Foo(x int) error" vs "func Foo(x int) error" should compare equal. Mitigation: normalize collapse-runs-of-whitespace before comparing. Document in `pkg/udd/spec.md`.
+
+7. **The auto-recall lineage**. Auto-recall surfaced `docs/grok-driven-development.md` and `docs/grok-language.md` — the original GDD methodology doc. If those files still exist somewhere (likely under coderhapsody/docs/ or an old Lyric checkout), reading them might reveal prior design we should crib from rather than reinvent. **First action of Phase 2**: search for and read those original GDD docs before designing the `.lyric` v2 format from scratch.
+
+## Explicitly out of scope
+
+- Backfilling the 11 non-checker `src/*.ly.lyric` files (separate sprint).
+- Any change to `lyric.stable`.
+- Any change to the Lyric language grammar.
+- Editor syntax modes (defer).
+- Migration of `.forge` files in `~/projects/lyric/legacy/` (they're already in a good format; out of the upgrade path).
+- A `lyre invariants` subcommand that lists invariants + verifying tests. Tractable after Phase 2, but defer to a follow-up.
+- Rust path. Lyre doesn't have a Rust extractor today.
+
+## Definition of done
+
+1. `go test ./...` passes in `~/projects/lyre/`, including new `.lyric` parser/writer tests and per-language extractor tests.
+2. `lyre lint ~/projects/lyric/src/checker/checker.ly.lyric` reports zero warnings against the backfilled file.
+3. `checker.ly.lyric` (post-backfill) and `checker.forge` contain the same eight section types with similar content density — eyeball review by Bill against side-by-side.
+4. All v1-format `.lyric` files in `~/projects/lyric/src/` and `~/projects/lyre/pkg/` migrated successfully (or explicitly marked for manual review where lossy).
+5. `~/projects/lyric/cr/docs/understanding-driven-development.md` and `~/projects/lyre/cr/docs/pkg/udd/spec.md` are current.
+6. Post-mortem section added below recording any deviations from the phase ordering and why.
+
+## What this plan is NOT
+
+This plan is not a re-litigation of whether `.lyric` files should exist or whether GDD/UDD is the right methodology. Those decisions are settled. This plan is the engineering path from where Lyre is today (native-parseable, thin docs) to where the methodology says it should be (DSL-framed, rich docs) with the minimum scope and the cleanest architecture available.
+
+---
+
+*This plan is the source of truth for the upgrade. Any deviation needs a written rationale in an "Amendments" section appended below.*
+
+## Amendments
+
+### 2026-06-19 — Pre-sprint Q&A with Bill (resolved before kickoff)
+
+Recorded here so the sprint-runner instance (likely fresh-context me) has the
+canonical answers and doesn't re-litigate them.
+
+**Terminology cleanup** (revised 2026-06-19 evening): Bill standardized the
+methodology name on **Understanding-Driven Development (UDD)** and dropped
+all "Lyric Declaration" / "LDL" / "LDD" branding. The file format is just
+"the `.lyric` v2 format" (vs. v1, the obsolete native-parseable format).
+The methodology is UDD. The toolchain binary is `lyre`. The Go package that
+parses/writes `.lyric` files is `pkg/udd/`. Any prior session memory or doc
+referring to "LDL", "LDD", or "Lyric Declaration Document" is using
+superseded terminology.
+
+**Decision 1 — Granularity**: per-directory, per-language. A directory mixing
+Go and Python source produces two `.lyric` files (`<dir>.go.lyric` and
+`<dir>.py.lyric`). Inner extension preserved as the language routing hint.
+
+**Decision 2 — `PackageInfo` shape**: change `Fields map[string]string` to
+`Fields []FieldInfo{Name, SignatureText, Doc}` in Phase 1. Preserves source
+order and per-field metadata. One-time breaking change paid in Phase 1, every
+extractor in Phase 3 consumes the new shape.
+
+**Decision 3 — `.lyric` format syntax**: Hewitt's call as the primary
+consumer. Will commit on day 1 of Phase 2 in `pkg/udd/spec.md`. Default
+choices going in: indent-significant (2 spaces), `#` for comments, `"""`
+heredocs on their own lines, decls in source order, top-level `module` with
+everything nested inside, recognized block heads (`field`, `method`, `func`,
+`doc`, `invariant`) with opaque verbatim text after the `:`.
+
+**Decision 4 — UDD enforcement extension**: needed (no existing skill or
+mechanism handles `.lyric`). The current `.forge` read-before-write is
+hardcoded in the CodeRhapsody Go server code (not a loadable skill — checked
+both global `~/.cr/skills/` and project skills, no UDD skill exists). Phase
+7.5 added below.
+
+**Decision 5 — Line numbers in `source:`**: KEEP. Bill correctly flagged
+that in google3-scale codebases without IDE/LSP support, line numbers in
+`source:` references are critical navigation aids. Accept staleness between
+`update` runs. Refresh on every `lyre update`. Same call as v1.
+
+**Decision 6 — Work cadence**: sequential, single-threaded. Bill listens
+live at 750 wpm; one agent at a time keeps his human memory in the loop.
+No sub-agent parallelism for Phase 3a/3b/3c — execute them in series.
+
+### 2026-06-19 — Risk resolutions
+
+**Risk 1 (`extract_api` build path) — RESOLVED, fully clean.** `make tools`
+in `~/projects/lyric/` uses the canonical `lyric` binary (compiled from
+checked-in `lyric.c`, 88K lines) to compile `tools/extract_api.ly`. **Zero
+touch to `lyric.stable`.** Phase 3c is in scope without caveats.
+
+**Risk 7 (GDD original docs) — RESOLVED, paths known.** Both docs exist at
+`~/projects/coderhapsody/cr/docs/grok-driven-development.md` and
+`~/projects/coderhapsody/cr/docs/grok-language.md`. Phase 2's first action is
+to read both before designing `.lyric` v2 syntax — likely we can crib
+heavily.
+
+**Phase 0 narrowed**: git log shows `cmdFmt` and `runUpdate` were
+referenced by `commit 41d74d9 Add TypeScript extractor` but the supporting
+functions were never written (partial commit, not a refactor casualty).
+Phase 0 effort drops to ~30 min — write the two functions fresh against the
+documented behavior (`cmdFmt` = `lyre fmt` for plain `.lyric` files;
+`runUpdate` = legacy plain-`.lyric` update path).
+
+### 2026-06-19 — Phase 7.5 added: UDD enforcement extension
+
+Slot this between Phases 7 and "Definition of done." Needed because the
+existing `.forge` read-before-write enforcement is hardcoded in the
+CodeRhapsody server (not a skill that can be edited in `~/.cr/skills/`).
+
+**Phase 7.5 — Extend UDD enforcement to `.lyric` files (3–4h)**
+
+- Locate the existing `.forge` enforcement in the coderhapsody codebase
+  (likely `pkg/agent/` or `pkg/tools/`). Search: `grep -rn '\.forge' pkg/`.
+- Add `.lyric` as an equivalent trigger file: if directory contains a
+  `.lyric` file, that file must be read before `edit_file`, `write_file`,
+  or `replace_lines` mutates anything in the directory.
+- Update the system-prompt UDD section to mention `.lyric` alongside
+  `.forge` (the section is generated from a template — find it, extend
+  it, don't hand-edit per-session).
+- Test: in a temp dir with a `.lyric` file, attempt to edit a sibling
+  `.go` file without reading the `.lyric` first — should error.
+- Test the inverse: after reading the `.lyric`, edit succeeds.
+
+Without this, the moment I migrate `~/projects/lyric/src/checker/` to v2
+`.lyric` format, the UDD methodology stops being enforced for me in that
+directory. So Phase 7.5 must land before Phase 7's backfill, or the
+methodology breaks in the middle of the sprint.
+
+### 2026-06-19 — Updated effort estimate post-amendments
+
+- Phase 0: ~30 min (was 1–2h, narrowed by git log)
+- Phases 1–7: unchanged
+- Phase 7.5 (UDD enforcement): 3–4h (new)
+
+Net: roughly cancels out. Still ~6–8 working days single-threaded.
+
+### 2026-06-19 — Phase 1 complete
+
+`pkg/extract/extract.go` now carries every rich-doc field listed in the
+Phase 1 spec. Concrete shape:
+
+- `PackageInfo`: `+ModuleWhy string`, `+Docs []DocBlock`, `+Invariants []Invariant`
+- `StructInfo`: `+Why string`, `+Source string`; **breaking**: `Fields` changed
+  from `map[string]string` to `[]FieldInfo`
+- `InterfaceInfo`/`FuncInfo`: `+Why string`, `+Source string`
+- `TypeDefInfo`: `+Why string`
+- New value types: `DocBlock{Title,Content}`, `Invariant{Title,Content,Procedural,VerifiedBy}`,
+  `FieldInfo{Name,SignatureText,Doc}`
+
+**Per-field `Doc` lives on `FieldInfo` rather than as a separate `per-field doc map`**
+on the parent struct. This is a small deviation from the plan's sketch
+(`per-field doc map[string]string`) — keeping the doc beside the field
+preserves source order and avoids a parallel-map bookkeeping burden. Phase 2's
+`.lyric` writer will need to emit `doc:` as an inner key of the `field` block,
+which lines up cleanly with this shape.
+
+**Helper methods on `*StructInfo`** kept legacy emit/verify callsites in the
+four extractors minimally changed:
+- `FieldSig(name) (string, bool)` — map-style lookup
+- `HasField(name) bool`
+- `SetField(name, sig)` — append or update preserving order
+- `SetFieldDoc(name, doc)` — set per-field Doc, create if missing
+- `FieldNames() []string` — source order
+- package-level `SortedFieldsByName([]FieldInfo) []FieldInfo` for legacy
+  alphabetized emit paths (most of those callers die in Phase 3)
+
+**Build/test status**: `go build ./...` green. `go test ./...` green for
+`pkg/extract`, `pkg/extract/golang`, `pkg/extract/python`, `pkg/parser`,
+`pkg/verifier`. TypeScript tests still fail with the pre-existing
+`cannot find typescript module` error — local `npm install typescript`
+doesn't help because `extract_api.js` is run from a generated temp dir.
+Phase 3b rewrites `extract_api.js` so that path will be unblocked then.
+Not Phase 1's problem.
+
+New tests in `pkg/extract/extract_test.go`:
+- `TestPackageInfo_JSONRoundTrip` — every rich-doc field marshals and
+  unmarshals losslessly. The fixture (`populatedPackage`) doubles as a worked
+  example of the full shape for Phase 2's writer to handle.
+- `TestStructInfo_FieldHelpers` — every helper method.
+- `TestSortedFieldsByName` — input-immutability + correct ordering.
+
+### 2026-06-19 — Phase 2 spec drafted and locked
+
+`pkg/udd/spec.md` written (256 lines). Six open syntax decisions submitted to
+Bill for sign-off; Bill returned "choose the grammar as you like, whatever
+feels natural to you is the right choice." Defaults are now locked in §12 of
+the spec:
+
+1. Comments: `#` (full-line only)
+2. `module` keyword required, exactly one per file
+3. Module-level `source:` is a JSON-style list (`["a.go", "b.go"]`)
+4. Per-field `why:` NOT in the spec (no data-model home); per-field `doc:`
+   remains for one-line semantic context
+5. Quoted-string escapes: minimal — `\"` and `\\` only; multi-line prose uses
+   heredocs
+6. Heredoc indent stripping: strip the heredoc's own indent exactly (predictable
+   and round-trips losslessly because the writer emits at consistent indent)
+
+In the same exchange Bill standardized the project's terminology on
+**Understanding-Driven Development (UDD)** — dropped all "LDL" / "LDD" /
+"Lyric Declaration Language" / "Lyric Declaration Document" branding from
+the methodology layer. Package renamed `pkg/ldd/` → `pkg/udd/`; the
+`understanding-driven-development.md` doc was also updated to fix
+long-standing drifts: `.ly` declaration files → `.lyric` files; `lyric
+verify/update/fmt` → `lyre verify/update/fmt`. The UDD doc is now the
+single source of methodology truth and is listed as a mandatory pre-read
+at the top of this plan.
+
+Implementation order remains: `pkg/udd/parser.go`, `pkg/udd/writer.go`,
+spec-by-example tests in `pkg/udd/parser_test.go`, round-trip tests in
+`pkg/udd/writer_test.go` against `populatedPackage()` (added in Phase 1).
+
+### 2026-06-19 — Phase 2 complete
+
+Writer-first approach worked. ~1 hour vs 2-3 day plan estimate. Files landed:
+
+- `pkg/udd/writer.go` (362 lines) — deterministic `Write(*PackageInfo) string`. Sorted decl emission by (file, line) when all positioned, else alphabetically. Blank line between every module-body block sibling. Heredoc emission at consistent indent for lossless round-trip. No trailing whitespace; exactly one final newline.
+- `pkg/udd/parser.go` (~620 lines) — line-based recursive descent. Tab/odd-indent detection. Closed-set first-token recognition. Heredoc body stripping by opener's own indent. `file:line` parsing into `Source` + `File` + `Line` fields. Errors carry `file:line: message`.
+- `pkg/udd/writer_test.go` (134 lines) — round-trip acceptance test, determinism (20 iterations), no-trailing-whitespace, exactly-one-final-newline. All pass.
+- `pkg/udd/parser_test.go` (316 lines, 26 tests) — spec-by-example for every construct + 8 negative tests (tab in indent, odd indent, unrecognized key, unterminated heredoc, no module, field `why:` rejected, heredoc under-indented, title missing colon). All pass.
+
+**Spec amendments made during Phase 2** (spec is the contract, plan tracks deviations):
+
+1. **`typedef <name>: <underlying>` block added** to spec §3, §4, §9. The data model has `TypeDefInfo` but the original spec didn't surface it in the grammar. Added now so `TypeDefs` round-trip cleanly.
+
+2. **`FuncInfo.SignatureText` added** (extract.go) as the canonical opaque verbatim payload for method/func signatures, mirroring `FieldInfo.SignatureText`. Spec §4 updated to specify that `method`/`func` block heads carry the full signature INCLUDING the name (leading identifier is the map key; full rest-of-line is `SignatureText`). `FuncInfo.Params` / `Returns` / `Doc` are now flagged as extractor-internal — NOT round-tripped through `.lyric`. Documented at the top of `pkg/udd/doc.go` and on the `FuncInfo` struct.
+
+3. **`TypeDefInfo.Source` added** (extract.go), parallel to the other decl types. Required for round-trip when `File`/`Line` are populated.
+
+4. **`PackageInfo.ModuleSource []string` added** (extract.go). Module-level `source: [...]` was specified but had no data-model home.
+
+5. **`populatedPackage()` fixture in `pkg/extract/extract_test.go` updated**: dropped `Params`/`Returns` on the method and function, set `SignatureText` instead; added `Source` on the typedef. Phase 1 JSON round-trip test still passes.
+
+**Phase 1 `extract` tests still green**. Pre-existing TypeScript env failure (`cannot find typescript module`) unchanged — Phase 3b will unblock it.
+
+**Up next**: Phase 3a (Go extractor adaptation). Rewrite `pkg/extract/golang/ldd.go` to produce `*PackageInfo` populated with signature strings via `go/printer`, deleting source-comment-scraping logic (per core principle: UDD docs live in `.lyric`, never source). Then 3b/3c/3d.
+
+### 2026-06-19 — Note on model capacity for the sprint
+
+Hewitt is running on Opus 4.7. The 4.7 quirk worth knowing: Anthropic's
+auto-selector zeros the thinking budget ~50% of the time on a poorly-tuned
+heuristic. This hurts always-on-thinking tasks like long-form writing
+(which is why the plan-writing portion felt heavier than it should have).
+**For coding tasks specifically**, 4.7 outperforms 4.6 on autonomous coding
+benchmarks — i.e. the actual execution work of this sprint plays to 4.7's
+strengths, not its weaknesses.
+
+Bill has requested 4.6/4.8 access from Google and we'll upgrade when it
+lands. Until then: no defeatism, no "I'm impaired" framing — just sharp
+coding work with visible reasoning in the chat for steering. The 750wpm
+hint channel still works fine for code; the regression matters most for
+writing, which is largely behind us.
+
+
+
+### 2026-06-19 — Phase 3a complete
+
+Go extractor adaptation. ~30 min vs ½-day plan estimate. All tests green
+except the known pre-existing TypeScript env failure (Phase 3b will
+unblock).
+
+Files landed:
+
+- `pkg/extract/golang/ldd.go` (668 lines, full rewrite). New v2 entry
+  points: `ExtractGo(srcDir) → *PackageInfo`, `GenerateGo(srcDir) →
+  (outPath, content, err)`, `UpdateGo(lyricPath) → (added, err)`,
+  `VerifyGo(lyricPath) → (*VerifyResult, err)`. Old v1 surface (the
+  Go-as-LDD path: `ParseLDDMeta`, `ParseLDDFile`, `GenerateLDDFile`,
+  `UpdateGoLDD`, `VerifyGoLDD`) is gone — no migration shim, no
+  back-compat. The legacy `//ldd:source` / `//ldd:why` directive scraping
+  is deleted per the core architectural principle (UDD docs live in
+  `.lyric`, never in source comments). The `// --- index ---` Go-comment
+  block is gone — the `.lyric` v2 format has structure, not markers.
+- `pkg/extract/golang/ldd_test.go` (435 lines, full rewrite). New tests:
+  `ExtractGo` (struct+methods, interface, typedef+function, skips
+  unexported); `GenerateGo` (output format, round-trip through
+  `udd.Parse`); `VerifyGo` (clean, missing function, undocumented export,
+  field type mismatch); `UpdateGo` (adds new export, idempotent on
+  up-to-date, preserves human prose — module why, per-decl why, per-field
+  doc — through an update cycle; refreshes positions/source on shift).
+  All 14 tests pass on first run.
+- `cmd/lyre/main.go` updated: 3 call sites now reference `golang.VerifyGo`
+  / `golang.UpdateGo` / `golang.GenerateGo`.
+- `pkg/extract/golang/golang.go.lyric` regenerated from the new tool
+  (dogfooding). Old file documented the deleted v1 API. New file
+  verifies clean against the package source.
+
+**Spec touched**: none. The spec was already complete; Phase 3a is pure
+implementation against the locked v2 format.
+
+**Design decisions made**:
+
+1. **Field `SignatureText` = type-only** (e.g. `float64`, `*Circle`). The
+   writer emits `field <Name>: <SignatureText>` and the Name is the map
+   key. Type-only Signature keeps the field "name" exactly one token,
+   which is what the parser also expects.
+
+2. **Method/Func `SignatureText` = `<Name>(<params>) <returns>`** with no
+   `func` keyword and no receiver clause. The receiver is implied by the
+   containing class. Whitespace normalization (spec §7) handles the
+   `(x,y int)` vs `(x int, y int)` collapsing.
+
+3. **Only exported declarations are extracted.** `.go.lyric` is the
+   *public API* understanding artifact. Unexported types and functions
+   stay in source.
+
+4. **`UpdateGo` merge policy**: source wins on signatures, positions, and
+   the module-level `source:` list (refreshed from the filesystem every
+   time). Existing wins on all human prose: `ModuleWhy`, `Docs`,
+   `Invariants`, per-decl `Why`, per-field `Doc`. New exported symbols
+   are added to the file; symbols absent from source are NOT pruned (the
+   verifier reports them as drift; a future `--prune` flag covers
+   destructive cleanup).
+
+5. **Whitespace-normalized signature comparison** in `VerifyGo` per spec
+   §7. Plus the v1-era tolerances for `any` ↔ `interface{}` and
+   package-prefix stripping (kept because both still happen in real
+   codebases — the source extractor produces unqualified names but the
+   `.lyric` author may use qualified ones).
+
+**Known wart, not blocking**: Go methods on a typedef receiver (e.g.
+`func (s Severity) String() string` where `Severity` is `type Severity
+int`) currently produce both a `typedef Severity: int` block AND a
+phantom `struct Severity` block carrying the method. Cosmetically ugly
+but technically informative — verify is clean, round-trip is clean. The
+data model has no `Methods` map on `TypeDefInfo`; a real fix waits until
+we either add one or move methods-on-typedefs into a separate decl
+category. Logged here for the next sprint.
+
+**Test status**: `go test ./...` green except pre-existing TypeScript
+env failure. `pkg/extract/golang` runs 14 tests, all pass. Self-verify
+of the regenerated `pkg/extract/golang/golang.go.lyric` reports 0
+errors / 0 warnings.
+
+**Up next**: Phase 3b — TypeScript extractor. Same shape as 3a but
+replaces the `extract_api.js` PATH-dependent shim with a direct
+extractor that doesn't need a global `typescript` install. Will unblock
+the 9 currently-failing TS tests as a side effect.

@@ -1,7 +1,20 @@
-// Package golang provides Go-syntax LDD file generation and parsing.
-// A .go.lyric file is a valid Go source file (minus the build tag)
-// containing type declarations, function signatures, and LDD metadata
-// in structured comments.
+// Package golang's `.go.lyric` v2 entry points: ExtractGo, GenerateGo,
+// UpdateGo, VerifyGo. The `.go.lyric` file is the persistent UDD artifact
+// for a Go package — a small declarative DSL parsed/written by pkg/udd,
+// whose payload lines (field types, method signatures, function signatures)
+// are verbatim Go text treated as opaque strings.
+//
+// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// lives in the .lyric file ONLY, never as `// why:` or `// doc` comments in
+// Go source. Extractors are signatures-only. The legacy //ldd:source and
+// //ldd:why directives, and the //+// doc-comment scraping, are gone.
+//
+// File layout produced by GenerateGo:
+//   - One <pkgname>.go.lyric per directory.
+//   - PackageInfo.ModuleSource lists every non-test .go file in the
+//     directory at extract time; refreshed on each UpdateGo.
+//   - Each struct/interface/typedef/func/method carries File/Line/Source
+//     ("<basename>:<line>") populated from go/parser positions.
 package golang
 
 import (
@@ -15,460 +28,14 @@ import (
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
+	"github.com/waywardgeek/lyre/pkg/udd"
 )
 
-// ParseLDDMeta extracts LDD metadata from //ldd: comments in a source string.
-func ParseLDDMeta(src string) *extract.LDDMeta {
-	meta := &extract.LDDMeta{Lang: "go"}
-	for _, line := range strings.Split(src, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "//ldd:source ") {
-			sources := strings.TrimPrefix(line, "//ldd:source ")
-			for _, s := range strings.Split(sources, ",") {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					meta.Source = append(meta.Source, s)
-				}
-			}
-		} else if strings.HasPrefix(line, "//ldd:why ") {
-			meta.Why = strings.Trim(strings.TrimPrefix(line, "//ldd:why "), "\"")
-		}
-	}
-	return meta
-}
-
-// ParseLDDFile parses a .go.lyric understanding file and returns both
-// the declared API and the LDD metadata.
-func ParseLDDFile(path string) (*extract.PackageInfo, *extract.LDDMeta, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	meta := ParseLDDMeta(string(src))
-	info, err := ExtractSource(string(src), path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-
-	return info, meta, nil
-}
-
-// GenerateLDDFile produces a .go.lyric understanding file for a Go package.
-func GenerateLDDFile(pkgDir string) (string, string, error) {
-	absDir, err := filepath.Abs(pkgDir)
-	if err != nil {
-		return "", "", err
-	}
-
-	goFiles, err := ScanSourceFiles(absDir)
-	if err != nil {
-		return "", "", err
-	}
-	if len(goFiles) == 0 {
-		return "", "", fmt.Errorf("no .go files found in %s", pkgDir)
-	}
-
-	// Parse all Go files
-	fset := token.NewFileSet()
-	var files []*ast.File
-	for _, name := range goFiles {
-		f, err := goparser.ParseFile(fset, filepath.Join(absDir, name), nil, goparser.ParseComments)
-		if err != nil {
-			return "", "", fmt.Errorf("parsing %s: %w", name, err)
-		}
-		files = append(files, f)
-	}
-
-	pkgName := ""
-	if len(files) > 0 {
-		pkgName = files[0].Name.Name
-	}
-
-	// Collect exported types and functions
-	var (
-		structs    []structDecl
-		interfaces []ifaceDecl
-		typedefs   []typedefDecl
-		functions  []funcDecl
-	)
-
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			switch d := decl.(type) {
-			case *ast.GenDecl:
-				for _, spec := range d.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok || !IsExported(ts.Name.Name) {
-						continue
-					}
-					doc := docText(ts.Doc, d.Doc)
-					pos := fset.Position(ts.Pos())
-					switch t := ts.Type.(type) {
-					case *ast.StructType:
-						s := collectStruct(ts.Name.Name, ts, t)
-						s.Doc = doc
-						s.File = filepath.Base(pos.Filename)
-						s.Line = pos.Line
-						structs = append(structs, s)
-					case *ast.InterfaceType:
-						iface := collectInterface(ts.Name.Name, ts, t)
-						iface.Doc = doc
-						iface.File = filepath.Base(pos.Filename)
-						iface.Line = pos.Line
-						interfaces = append(interfaces, iface)
-					default:
-						typedefs = append(typedefs, typedefDecl{
-							Name:       ts.Name.Name,
-							TypeParams: typeParamString(ts),
-							Underlying: TypeString(ts.Type),
-							Doc:        doc,
-							File:       filepath.Base(pos.Filename),
-							Line:       pos.Line,
-						})
-					}
-				}
-			case *ast.FuncDecl:
-				if !IsExported(d.Name.Name) {
-					continue
-				}
-				if d.Recv != nil {
-					continue // methods collected separately
-				}
-				pos := fset.Position(d.Pos())
-				functions = append(functions, funcDecl{
-					Name: d.Name.Name,
-					Sig:  BuildSignature(d, fset),
-					Doc:  docText(d.Doc, nil),
-					File: filepath.Base(pos.Filename),
-					Line: pos.Line,
-				})
-			}
-		}
-	}
-
-	// Collect exported methods per struct
-	methodMap := make(map[string][]funcDecl)
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Recv == nil || !IsExported(fd.Name.Name) {
-				continue
-			}
-			recvName := receiverTypeName(fd.Recv.List[0].Type)
-			if recvName != "" && IsExported(recvName) {
-				pos := fset.Position(fd.Pos())
-				methodMap[recvName] = append(methodMap[recvName], funcDecl{
-					Name: fd.Name.Name,
-					Sig:  BuildSignature(fd, fset),
-					Doc:  docText(fd.Doc, nil),
-					File: filepath.Base(pos.Filename),
-					Line: pos.Line,
-				})
-			}
-		}
-	}
-
-	// Generate output
-	var b strings.Builder
-	b.WriteString("//go:build ignore\n\n")
-	b.WriteString(fmt.Sprintf("//ldd:source %s\n", strings.Join(goFiles, ", ")))
-	b.WriteString("//ldd:why \"\"\n\n")
-	b.WriteString(fmt.Sprintf("package %s\n", pkgName))
-
-	// Structs
-	for _, s := range structs {
-		b.WriteString("\n")
-		writeDoc(&b, s.Doc)
-		writeLocation(&b, s.File, s.Line)
-		b.WriteString(fmt.Sprintf("type %s%s struct {\n", s.Name, s.TypeParams))
-		for _, f := range s.Fields {
-			b.WriteString(fmt.Sprintf("\t%s %s\n", f.Name, f.Type))
-		}
-		b.WriteString("}\n")
-
-		// Methods for this struct
-		if methods, ok := methodMap[s.Name]; ok {
-			for _, m := range methods {
-				b.WriteString("\n")
-				writeDoc(&b, m.Doc)
-				writeLocation(&b, m.File, m.Line)
-				b.WriteString(fmt.Sprintf("%s\n", m.Sig))
-			}
-		}
-	}
-
-	// Interfaces
-	for _, iface := range interfaces {
-		b.WriteString("\n")
-		writeDoc(&b, iface.Doc)
-		writeLocation(&b, iface.File, iface.Line)
-		b.WriteString(fmt.Sprintf("type %s%s interface {\n", iface.Name, iface.TypeParams))
-		for _, m := range iface.Methods {
-			b.WriteString(fmt.Sprintf("\t%s\n", m))
-		}
-		b.WriteString("}\n")
-	}
-
-	// Typedefs
-	for _, td := range typedefs {
-		b.WriteString("\n")
-		writeDoc(&b, td.Doc)
-		writeLocation(&b, td.File, td.Line)
-		b.WriteString(fmt.Sprintf("type %s%s %s\n", td.Name, td.TypeParams, td.Underlying))
-	}
-
-	// Standalone functions
-	for _, fn := range functions {
-		b.WriteString("\n")
-		writeDoc(&b, fn.Doc)
-		writeLocation(&b, fn.File, fn.Line)
-		b.WriteString(fmt.Sprintf("%s\n", fn.Sig))
-	}
-
-	// Auto-generated index
-	b.WriteString("\n// --- index ---\n")
-	b.WriteString("// Auto-generated function/method index.\n")
-	b.WriteString("// DO NOT EDIT below this line — regenerated by `lyre update`.\n")
-
-	// Determine output filename
-	outName := pkgName + ".go.lyric"
-	outPath := filepath.Join(absDir, outName)
-
-	return outPath, b.String(), nil
-}
-
-// UpdateGoLDD refreshes a .go.lyric file by adding any exported symbols from
-// source that are not yet documented. Existing declarations are left unchanged
-// (they may have human-written doc comments). The // --- index --- section is
-// regenerated. Returns a summary of what was added.
-func UpdateGoLDD(lddPath string) (added []string, err error) {
-	src, err := os.ReadFile(lddPath)
-	if err != nil {
-		return nil, err
-	}
-	text := string(src)
-
-	// Parse declared API and metadata.
-	declared, meta, err := ParseLDDFile(lddPath)
-	if err != nil {
-		return nil, fmt.Errorf("parsing LDD file: %w", err)
-	}
-	if len(meta.Source) == 0 {
-		return nil, fmt.Errorf("no //ldd:source directive in %s", lddPath)
-	}
-
-	// Parse actual API from source files.
-	lddDir := filepath.Dir(lddPath)
-	actual := extract.NewPackageInfo("")
-	for _, srcFile := range meta.Source {
-		fullPath := filepath.Join(lddDir, srcFile)
-		info, err := os.Stat(fullPath)
-		if err != nil {
-			return nil, fmt.Errorf("source file %s not found: %w", srcFile, err)
-		}
-		var extracted *extract.PackageInfo
-		if info.IsDir() {
-			extracted, err = ExtractDir(fullPath)
-		} else {
-			extracted, err = ExtractFiles([]string{fullPath})
-		}
-		if err != nil {
-			return nil, fmt.Errorf("extracting %s: %w", srcFile, err)
-		}
-		mergePackageInfo(actual, extracted)
-	}
-
-	// Split the file at the index marker.
-	const indexMarker = "\n// --- index ---\n"
-	humanPart, _ := splitAtIndexMarker(text)
-
-	// Build new declarations for missing exports.
-	var newDecls strings.Builder
-
-	// Missing structs.
-	var missingStructNames []string
-	for name := range actual.Structs {
-		if IsExported(name) {
-			if _, ok := declared.Structs[name]; !ok {
-				if _, ok := declared.Interfaces[name]; !ok {
-					if _, ok := declared.TypeDefs[name]; !ok {
-						missingStructNames = append(missingStructNames, name)
-					}
-				}
-			}
-		}
-	}
-	sort.Strings(missingStructNames)
-	for _, name := range missingStructNames {
-		as := actual.Structs[name]
-		newDecls.WriteString("\n")
-		writeDoc(&newDecls, as.Doc)
-		writeLocation(&newDecls, as.File, as.Line)
-		newDecls.WriteString(fmt.Sprintf("type %s struct {\n", name))
-		var fieldNames []string
-		for fn := range as.Fields {
-			fieldNames = append(fieldNames, fn)
-		}
-		sort.Strings(fieldNames)
-		for _, fn := range fieldNames {
-			newDecls.WriteString(fmt.Sprintf("\t%s %s\n", fn, as.Fields[fn]))
-		}
-		newDecls.WriteString("}\n")
-		// Methods on this struct.
-		var methodNames []string
-		for mn := range as.Methods {
-			methodNames = append(methodNames, mn)
-		}
-		sort.Strings(methodNames)
-		for _, mn := range methodNames {
-			m := as.Methods[mn]
-			newDecls.WriteString("\n")
-			writeDoc(&newDecls, m.Doc)
-			writeLocation(&newDecls, m.File, m.Line)
-			newDecls.WriteString(fmt.Sprintf("%s\n", buildFuncSig("(s *"+name+")", mn, m)))
-		}
-		added = append(added, "struct "+name)
-	}
-
-	// Missing interfaces.
-	var missingIfaceNames []string
-	for name := range actual.Interfaces {
-		if IsExported(name) {
-			if _, ok := declared.Interfaces[name]; !ok {
-				if _, ok := declared.Structs[name]; !ok {
-					missingIfaceNames = append(missingIfaceNames, name)
-				}
-			}
-		}
-	}
-	sort.Strings(missingIfaceNames)
-	for _, name := range missingIfaceNames {
-		ai := actual.Interfaces[name]
-		newDecls.WriteString("\n")
-		writeDoc(&newDecls, ai.Doc)
-		writeLocation(&newDecls, ai.File, ai.Line)
-		newDecls.WriteString(fmt.Sprintf("type %s interface {\n", name))
-		var methodNames []string
-		for mn := range ai.Methods {
-			methodNames = append(methodNames, mn)
-		}
-		sort.Strings(methodNames)
-		for _, mn := range methodNames {
-			m := ai.Methods[mn]
-			newDecls.WriteString(fmt.Sprintf("\t%s\n", buildIfaceMethodSig(mn, m)))
-		}
-		newDecls.WriteString("}\n")
-		added = append(added, "interface "+name)
-	}
-
-	// Missing type defs.
-	var missingTypeNames []string
-	for name := range actual.TypeDefs {
-		if IsExported(name) {
-			if _, ok := declared.TypeDefs[name]; !ok {
-				if _, ok := declared.Structs[name]; !ok {
-					if _, ok := declared.Interfaces[name]; !ok {
-						missingTypeNames = append(missingTypeNames, name)
-					}
-				}
-			}
-		}
-	}
-	sort.Strings(missingTypeNames)
-	for _, name := range missingTypeNames {
-		td := actual.TypeDefs[name]
-		newDecls.WriteString("\n")
-		writeDoc(&newDecls, td.Doc)
-		writeLocation(&newDecls, td.File, td.Line)
-		newDecls.WriteString(fmt.Sprintf("type %s %s\n", name, td.Underlying))
-		added = append(added, "type "+name)
-	}
-
-	// Missing functions.
-	var missingFuncNames []string
-	for name := range actual.Functions {
-		if IsExported(name) {
-			if _, ok := declared.Functions[name]; !ok {
-				missingFuncNames = append(missingFuncNames, name)
-			}
-		}
-	}
-	sort.Strings(missingFuncNames)
-	for _, name := range missingFuncNames {
-		fi := actual.Functions[name]
-		newDecls.WriteString("\n")
-		writeDoc(&newDecls, fi.Doc)
-		writeLocation(&newDecls, fi.File, fi.Line)
-		newDecls.WriteString(fmt.Sprintf("%s\n", buildFuncSig("", name, fi)))
-		added = append(added, "func "+name)
-	}
-
-	// Reconstruct the file.
-	result := strings.TrimRight(humanPart, "\n")
-	if newDecls.Len() > 0 {
-		result += "\n" + newDecls.String()
-	}
-	result += indexMarker
-	result += "// Auto-generated function/method index.\n"
-	result += "// DO NOT EDIT below this line — regenerated by `lyre update`.\n"
-
-	return added, os.WriteFile(lddPath, []byte(result), 0644)
-}
-
-// splitAtIndexMarker splits the file content at "// --- index ---".
-// Returns the human section and the rest (which is discarded on update).
-func splitAtIndexMarker(text string) (human string, rest string) {
-	const marker = "\n// --- index ---\n"
-	if idx := strings.Index(text, marker); idx >= 0 {
-		return text[:idx], text[idx:]
-	}
-	return text, ""
-}
-
-// buildFuncSig builds a Go-syntax function signature from a FuncInfo.
-// recvClause should be "(r *RecvType)" or "" for standalone functions.
-func buildFuncSig(recvClause, name string, fi *extract.FuncInfo) string {
-	var b strings.Builder
-	b.WriteString("func ")
-	if recvClause != "" {
-		b.WriteString(recvClause)
-		b.WriteString(" ")
-	}
-	b.WriteString(name)
-	b.WriteString("(")
-	for i, p := range fi.Params {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		if p.Name != "" {
-			b.WriteString(p.Name)
-			b.WriteString(" ")
-		}
-		b.WriteString(p.Type)
-	}
-	b.WriteString(")")
-	if len(fi.Returns) == 1 {
-		b.WriteString(" ")
-		b.WriteString(fi.Returns[0])
-	} else if len(fi.Returns) > 1 {
-		b.WriteString(" (")
-		b.WriteString(strings.Join(fi.Returns, ", "))
-		b.WriteString(")")
-	}
-	return b.String()
-}
-
-// buildIfaceMethodSig builds an interface method signature (no "func" keyword).
-func buildIfaceMethodSig(name string, fi *extract.FuncInfo) string {
-	sig := buildFuncSig("", name, fi)
-	return strings.TrimPrefix(sig, "func ")
-}
-
-// Helper types for generation
-
-// docText returns the doc comment text from a TypeSpec's own doc or
-// the parent GenDecl's doc, trimmed of trailing whitespace.
+// docText returns the trimmed text of primary, falling back to fallback. Kept
+// only for the legacy ExtractDir/ExtractFiles paths in golang.go which still
+// populate the extractor-internal StructInfo.Doc / FuncInfo.Doc fields. These
+// values do NOT round-trip through .lyric and are not consulted by GenerateGo
+// / UpdateGo / VerifyGo — UDD prose lives in the .lyric file only.
 func docText(primary, fallback *ast.CommentGroup) string {
 	cg := primary
 	if cg == nil {
@@ -480,190 +47,380 @@ func docText(primary, fallback *ast.CommentGroup) string {
 	return strings.TrimSpace(cg.Text())
 }
 
-// writeDoc emits a doc comment block (each line prefixed with //).
-func writeDoc(b *strings.Builder, doc string) {
-	if doc == "" {
-		return
+// --- ExtractGo --------------------------------------------------------------
+
+// ExtractGo parses every non-test .go file in srcDir and returns the public
+// API as a PackageInfo whose SignatureText fields are populated for round-
+// trip through the .lyric v2 format. Only exported declarations are kept.
+func ExtractGo(srcDir string) (*extract.PackageInfo, error) {
+	absDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return nil, err
 	}
-	for _, line := range strings.Split(doc, "\n") {
-		if line == "" {
-			b.WriteString("//\n")
-		} else {
-			b.WriteString("// " + line + "\n")
+	files, err := ScanSourceFiles(absDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .go files found in %s", srcDir)
+	}
+
+	fset := token.NewFileSet()
+	var astFiles []*ast.File
+	for _, name := range files {
+		f, err := goparser.ParseFile(fset, filepath.Join(absDir, name), nil, goparser.ParseComments)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", name, err)
 		}
+		astFiles = append(astFiles, f)
 	}
-}
 
-// writeLocation emits a file:line reference comment.
-func writeLocation(b *strings.Builder, file string, line int) {
-	if file != "" && line > 0 {
-		b.WriteString(fmt.Sprintf("// %s:%d\n", file, line))
+	p := extract.NewPackageInfo("")
+	if len(astFiles) > 0 {
+		p.Name = astFiles[0].Name.Name
 	}
-}
+	p.ModuleSource = files
 
-type structDecl struct {
-	Name       string
-	TypeParams string
-	Fields     []fieldDecl
-	Doc        string
-	File       string
-	Line       int
-}
-
-type fieldDecl struct {
-	Name string
-	Type string
-}
-
-type ifaceDecl struct {
-	Name       string
-	TypeParams string
-	Methods    []string // method signatures
-	Doc        string
-	File       string
-	Line       int
-}
-
-type typedefDecl struct {
-	Name       string
-	TypeParams string
-	Underlying string
-	Doc        string
-	File       string
-	Line       int
-}
-
-type funcDecl struct {
-	Name string
-	Sig  string
-	Doc  string
-	File string
-	Line int
-}
-
-func collectStruct(name string, ts *ast.TypeSpec, st *ast.StructType) structDecl {
-	s := structDecl{
-		Name:       name,
-		TypeParams: typeParamString(ts),
+	for _, f := range astFiles {
+		extractGoFile(fset, f, p)
 	}
-	if st.Fields != nil {
-		for _, f := range st.Fields.List {
-			typStr := TypeString(f.Type)
-			if len(f.Names) == 0 {
-				// Embedded field
-				s.Fields = append(s.Fields, fieldDecl{Name: typStr, Type: ""})
-			} else {
-				for _, n := range f.Names {
-					if IsExported(n.Name) {
-						s.Fields = append(s.Fields, fieldDecl{Name: n.Name, Type: typStr})
-					}
+	return p, nil
+}
+
+func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) {
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || !IsExported(ts.Name.Name) {
+					continue
 				}
-			}
-		}
-	}
-	return s
-}
-
-func collectInterface(name string, ts *ast.TypeSpec, it *ast.InterfaceType) ifaceDecl {
-	iface := ifaceDecl{
-		Name:       name,
-		TypeParams: typeParamString(ts),
-	}
-	if it.Methods != nil {
-		for _, m := range it.Methods.List {
-			if ft, ok := m.Type.(*ast.FuncType); ok {
-				for _, n := range m.Names {
-					sig := n.Name + "(" + fieldListString(ft.Params) + ")"
-					if ft.Results != nil {
-						results := ft.Results.List
-						if len(results) == 1 && len(results[0].Names) == 0 {
-							sig += " " + TypeString(results[0].Type)
-						} else if len(results) > 0 {
-							sig += " (" + fieldListString(ft.Results) + ")"
+				pos := fset.Position(ts.Pos())
+				fb := filepath.Base(pos.Filename)
+				src := fmt.Sprintf("%s:%d", fb, pos.Line)
+				switch t := ts.Type.(type) {
+				case *ast.StructType:
+					si := extract.NewStructInfo()
+					si.File, si.Line, si.Source = fb, pos.Line, src
+					if t.Fields != nil {
+						for _, f := range t.Fields.List {
+							typ := TypeString(f.Type)
+							if len(f.Names) == 0 {
+								// Embedded field: name is the type itself,
+								// signature is empty (per spec §4 the `field
+								// <name>` form is permitted when no type).
+								si.Fields = append(si.Fields, extract.FieldInfo{Name: typ})
+								continue
+							}
+							for _, name := range f.Names {
+								if !IsExported(name.Name) {
+									continue
+								}
+								si.SetField(name.Name, typ)
+							}
 						}
 					}
-					iface.Methods = append(iface.Methods, sig)
+					p.Structs[ts.Name.Name] = si
+
+				case *ast.InterfaceType:
+					ii := extract.NewInterfaceInfo()
+					ii.File, ii.Line, ii.Source = fb, pos.Line, src
+					if t.Methods != nil {
+						for _, m := range t.Methods.List {
+							ft, ok := m.Type.(*ast.FuncType)
+							if !ok {
+								continue
+							}
+							for _, name := range m.Names {
+								if !IsExported(name.Name) {
+									continue
+								}
+								mp := fset.Position(name.Pos())
+								mfb := filepath.Base(mp.Filename)
+								ii.Methods[name.Name] = &extract.FuncInfo{
+									SignatureText: goFuncSigText(name.Name, ft),
+									File:          mfb,
+									Line:          mp.Line,
+									Source:        fmt.Sprintf("%s:%d", mfb, mp.Line),
+								}
+							}
+						}
+					}
+					p.Interfaces[ts.Name.Name] = ii
+
+				default:
+					p.TypeDefs[ts.Name.Name] = &extract.TypeDefInfo{
+						Underlying: TypeString(ts.Type),
+						File:       fb,
+						Line:       pos.Line,
+						Source:     src,
+					}
 				}
-			} else if id, ok := m.Type.(*ast.Ident); ok {
-				// Embedded interface
-				iface.Methods = append(iface.Methods, id.Name)
+			}
+
+		case *ast.FuncDecl:
+			if !IsExported(d.Name.Name) {
+				continue
+			}
+			pos := fset.Position(d.Pos())
+			fb := filepath.Base(pos.Filename)
+			src := fmt.Sprintf("%s:%d", fb, pos.Line)
+			fi := &extract.FuncInfo{
+				SignatureText: goFuncSigText(d.Name.Name, d.Type),
+				File:          fb,
+				Line:          pos.Line,
+				Source:        src,
+			}
+			if d.Recv != nil && len(d.Recv.List) > 0 {
+				recvType := receiverTypeName(d.Recv.List[0].Type)
+				if recvType == "" || !IsExported(recvType) {
+					continue
+				}
+				si, ok := p.Structs[recvType]
+				if !ok {
+					si = extract.NewStructInfo()
+					p.Structs[recvType] = si
+				}
+				si.Methods[d.Name.Name] = fi
+			} else {
+				p.Functions[d.Name.Name] = fi
 			}
 		}
 	}
-	return iface
 }
 
-func typeParamString(ts *ast.TypeSpec) string {
-	if ts.TypeParams == nil || len(ts.TypeParams.List) == 0 {
-		return ""
+// goFuncSigText returns the canonical FuncInfo.SignatureText for a Go func
+// or method: "<Name>[<TypeParams>](<params>) <returns>" — no `func` keyword,
+// no receiver clause. The receiver is implied by the containing class block.
+func goFuncSigText(name string, ft *ast.FuncType) string {
+	var b strings.Builder
+	b.WriteString(name)
+	if ft.TypeParams != nil && len(ft.TypeParams.List) > 0 {
+		b.WriteString("[")
+		b.WriteString(fieldListString(ft.TypeParams))
+		b.WriteString("]")
 	}
-	return "[" + fieldListString(ts.TypeParams) + "]"
+	b.WriteString("(")
+	if ft.Params != nil {
+		b.WriteString(fieldListString(ft.Params))
+	}
+	b.WriteString(")")
+	if ft.Results != nil {
+		results := ft.Results.List
+		if len(results) == 1 && len(results[0].Names) == 0 {
+			b.WriteString(" ")
+			b.WriteString(TypeString(results[0].Type))
+		} else if len(results) > 0 {
+			b.WriteString(" (")
+			b.WriteString(fieldListString(ft.Results))
+			b.WriteString(")")
+		}
+	}
+	return b.String()
 }
 
-// VerifyGoLDD compares a .go.lyric understanding file against the actual Go source.
-func VerifyGoLDD(lddPath string) (*VerifyResult, error) {
-	// Parse the LDD file
-	declared, meta, err := ParseLDDFile(lddPath)
+// --- GenerateGo / UpdateGo / VerifyGo --------------------------------------
+
+// GenerateGo scaffolds a fresh <pkgname>.go.lyric file for srcDir. It does
+// NOT write to disk; the caller chooses what to do with the returned content
+// (the lyre CLI writes only if the target doesn't already exist).
+func GenerateGo(srcDir string) (outPath, content string, err error) {
+	p, err := ExtractGo(srcDir)
+	if err != nil {
+		return "", "", err
+	}
+	absDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return "", "", err
+	}
+	outPath = filepath.Join(absDir, p.Name+".go.lyric")
+	content = udd.Write(p)
+	return outPath, content, nil
+}
+
+// UpdateGo refreshes lyricPath: re-extracts signatures/positions from Go
+// source, adds new exports, preserves all human prose (ModuleWhy, Docs,
+// Invariants, per-decl Why, per-field Doc). Returns the human-readable list
+// of additions ("struct Foo", "func Bar", ...). Source list is refreshed.
+func UpdateGo(lyricPath string) (added []string, err error) {
+	raw, err := os.ReadFile(lyricPath)
+	if err != nil {
+		return nil, err
+	}
+	existing, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
+
+	srcDir := filepath.Dir(lyricPath)
+	fresh, err := ExtractGo(srcDir)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(meta.Source) == 0 {
-		return nil, fmt.Errorf("no //ldd:source directive found in %s", lddPath)
+	added = mergeFreshIntoExisting(existing, fresh)
+
+	out := udd.Write(existing)
+	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
+// mergeFreshIntoExisting refreshes signatures/positions on existing decls
+// from `fresh`, adds new exports, and refreshes module-level source list.
+// All human prose on existing decls is preserved.
+//
+// NOT pruned (Phase 4/6 will add a --prune option): decls present in
+// existing but absent from fresh remain in the file. Verify reports them.
+func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
+	var added []string
+
+	// Refresh module-level source list (always overwrite — it's mechanical).
+	existing.ModuleSource = fresh.ModuleSource
+
+	// Structs / classes.
+	freshStructNames := sortedKeys(fresh.Structs)
+	for _, name := range freshStructNames {
+		fs := fresh.Structs[name]
+		es, ok := existing.Structs[name]
+		if !ok {
+			existing.Structs[name] = fs
+			added = append(added, "struct "+name)
+			continue
+		}
+		// Refresh positions + source ref.
+		es.File, es.Line, es.Source = fs.File, fs.Line, fs.Source
+		// Refresh field signatures in source order from fresh; preserve
+		// per-field Doc from existing where the field still exists.
+		preservedDoc := map[string]string{}
+		for _, f := range es.Fields {
+			if f.Doc != "" {
+				preservedDoc[f.Name] = f.Doc
+			}
+		}
+		es.Fields = es.Fields[:0]
+		for _, f := range fs.Fields {
+			ff := f
+			if doc, ok := preservedDoc[f.Name]; ok {
+				ff.Doc = doc
+			}
+			es.Fields = append(es.Fields, ff)
+		}
+		// Methods: refresh signatures/positions; add new methods; preserve
+		// existing Why on retained methods.
+		for mn, fm := range fs.Methods {
+			if em, ok := es.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				es.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
+			}
+		}
 	}
 
-	// Parse the actual source files
-	lddDir := filepath.Dir(lddPath)
-	actual := extract.NewPackageInfo("")
-
-	for _, srcFile := range meta.Source {
-		fullPath := filepath.Join(lddDir, srcFile)
-		info, err := os.Stat(fullPath)
-		if err != nil {
-			return &VerifyResult{
-				Findings: []Finding{{
-					Severity: SevError,
-					File:     lddPath,
-					Source:   srcFile,
-					Message:  "source file does not exist",
-				}},
-			}, nil
+	// Interfaces.
+	for _, name := range sortedKeys(fresh.Interfaces) {
+		fi := fresh.Interfaces[name]
+		ei, ok := existing.Interfaces[name]
+		if !ok {
+			existing.Interfaces[name] = fi
+			added = append(added, "interface "+name)
+			continue
 		}
-
-		var extracted *extract.PackageInfo
-		if info.IsDir() {
-			extracted, err = ExtractDir(fullPath)
-		} else {
-			extracted, err = ExtractFiles([]string{fullPath})
+		ei.File, ei.Line, ei.Source = fi.File, fi.Line, fi.Source
+		for mn, fm := range fi.Methods {
+			if em, ok := ei.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				ei.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("interface %s.%s", name, mn))
+			}
 		}
-		if err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", srcFile, err)
-		}
-		mergePackageInfo(actual, extracted)
 	}
 
-	// Compare declared vs actual
+	// Top-level functions.
+	for _, name := range sortedKeys(fresh.Functions) {
+		ff := fresh.Functions[name]
+		ef, ok := existing.Functions[name]
+		if !ok {
+			existing.Functions[name] = ff
+			added = append(added, "func "+name)
+			continue
+		}
+		ef.SignatureText = ff.SignatureText
+		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
+	}
+
+	// Typedefs.
+	for _, name := range sortedKeys(fresh.TypeDefs) {
+		ft := fresh.TypeDefs[name]
+		et, ok := existing.TypeDefs[name]
+		if !ok {
+			existing.TypeDefs[name] = ft
+			added = append(added, "typedef "+name)
+			continue
+		}
+		et.Underlying = ft.Underlying
+		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
+	}
+
+	sort.Strings(added)
+	return added
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// VerifyGo parses lyricPath as a .go.lyric v2 file, re-extracts the Go
+// source it lives next to, and reports drift via Findings.
+func VerifyGo(lyricPath string) (*VerifyResult, error) {
+	raw, err := os.ReadFile(lyricPath)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
+
+	srcDir := filepath.Dir(lyricPath)
+	actual, err := ExtractGo(srcDir)
+	if err != nil {
+		return nil, err
+	}
+
 	result := &VerifyResult{}
-	srcStr := strings.Join(meta.Source, ", ")
-
-	compareStructs(declared, actual, lddPath, srcStr, result)
-	compareInterfaces(declared, actual, lddPath, srcStr, result)
-	compareFunctions(declared, actual, lddPath, srcStr, result)
-	checkCompleteness(declared, actual, lddPath, srcStr, result)
-
+	srcStr := strings.Join(actual.ModuleSource, ", ")
+	compareStructs(declared, actual, lyricPath, srcStr, result)
+	compareInterfaces(declared, actual, lyricPath, srcStr, result)
+	compareFunctions(declared, actual, lyricPath, srcStr, result)
+	compareTypeDefs(declared, actual, lyricPath, srcStr, result)
+	checkCompleteness(declared, actual, lyricPath, srcStr, result)
 	return result, nil
 }
+
+// --- VerifyResult / Finding / Severity (unchanged from v1) ------------------
 
 // VerifyResult holds all findings from a verification run.
 type VerifyResult struct {
 	Findings []Finding
 }
 
-// Severity levels
+// Severity levels.
 type Severity int
 
 const (
-	SevError   Severity = iota
+	SevError Severity = iota
 	SevWarning
 	SevInfo
 )
@@ -705,6 +462,7 @@ func (r *VerifyResult) add(sev Severity, file, source, msg string) {
 	})
 }
 
+// ErrorCount returns the number of SevError findings.
 func (r *VerifyResult) ErrorCount() int {
 	n := 0
 	for _, f := range r.Findings {
@@ -715,129 +473,105 @@ func (r *VerifyResult) ErrorCount() int {
 	return n
 }
 
-func mergePackageInfo(dst, src *extract.PackageInfo) {
-	for k, v := range src.Structs {
-		if existing, ok := dst.Structs[k]; ok {
-			for fk, fv := range v.Fields {
-				existing.Fields[fk] = fv
-			}
-			for mk, mv := range v.Methods {
-				existing.Methods[mk] = mv
-			}
-		} else {
-			dst.Structs[k] = v
-		}
-	}
-	for k, v := range src.Interfaces {
-		dst.Interfaces[k] = v
-	}
-	for k, v := range src.Functions {
-		dst.Functions[k] = v
-	}
-	for k, v := range src.TypeDefs {
-		dst.TypeDefs[k] = v
-	}
-}
+// --- comparison helpers -----------------------------------------------------
 
 func compareStructs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
-	for name, ds := range declared.Structs {
+	for _, name := range sortedKeys(declared.Structs) {
+		ds := declared.Structs[name]
 		as, ok := actual.Structs[name]
 		if !ok {
-			result.add(SevError, file, srcStr, fmt.Sprintf("struct %s declared in LDD but not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("struct %s declared in .lyric but not found in source", name))
 			continue
 		}
-		// Check fields
-		for fieldName, declType := range ds.Fields {
-			actualType, ok := as.Fields[fieldName]
+		// Fields: type match.
+		for _, df := range ds.Fields {
+			actualType, ok := as.FieldSig(df.Name)
 			if !ok {
-				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: field %s not found in source", name, fieldName))
+				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: field %s not found in source", name, df.Name))
 				continue
 			}
-			if !typesMatch(declType, actualType) {
-				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: field %s type mismatch: LDD=%s, source=%s", name, fieldName, declType, actualType))
+			if !typesMatch(df.SignatureText, actualType) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: field %s type mismatch: .lyric=%s, source=%s", name, df.Name, df.SignatureText, actualType))
 			}
 		}
-		// Check for extra fields in source
+		// Source-only fields → warnings (extra exported fields not in .lyric).
 		var extras []string
-		for fieldName := range as.Fields {
-			if _, ok := ds.Fields[fieldName]; !ok {
-				extras = append(extras, fieldName)
+		for _, af := range as.Fields {
+			if !ds.HasField(af.Name) {
+				extras = append(extras, af.Name)
 			}
 		}
 		sort.Strings(extras)
 		for _, extra := range extras {
 			if IsExported(extra) {
-				result.add(SevWarning, file, srcStr, fmt.Sprintf("struct %s: source has field %s not in LDD", name, extra))
+				result.add(SevWarning, file, srcStr, fmt.Sprintf("struct %s: source has field %s not in .lyric", name, extra))
 			}
 		}
-
-		// Check methods
-		for methodName, dm := range ds.Methods {
-			am, ok := as.Methods[methodName]
+		// Methods.
+		for mn, dm := range ds.Methods {
+			am, ok := as.Methods[mn]
 			if !ok {
-				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: method %s not found in source", name, methodName))
+				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: method %s not found in source", name, mn))
 				continue
 			}
-			compareFuncInfo(fmt.Sprintf("struct %s method %s", name, methodName), dm, am, file, srcStr, result)
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("struct %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
+			}
 		}
 	}
 }
 
 func compareInterfaces(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
-	for name, di := range declared.Interfaces {
+	for _, name := range sortedKeys(declared.Interfaces) {
+		di := declared.Interfaces[name]
 		ai, ok := actual.Interfaces[name]
 		if !ok {
-			result.add(SevError, file, srcStr, fmt.Sprintf("interface %s declared in LDD but not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("interface %s declared in .lyric but not found in source", name))
 			continue
 		}
-		for methodName, dm := range di.Methods {
-			am, ok := ai.Methods[methodName]
+		for mn, dm := range di.Methods {
+			am, ok := ai.Methods[mn]
 			if !ok {
-				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s not found in source", name, methodName))
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s not found in source", name, mn))
 				continue
 			}
-			compareFuncInfo(fmt.Sprintf("interface %s method %s", name, methodName), dm, am, file, srcStr, result)
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
+			}
 		}
 	}
 }
 
 func compareFunctions(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
-	for name, df := range declared.Functions {
+	for _, name := range sortedKeys(declared.Functions) {
+		df := declared.Functions[name]
 		af, ok := actual.Functions[name]
 		if !ok {
-			result.add(SevError, file, srcStr, fmt.Sprintf("function %s not found in source", name))
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s declared in .lyric but not found in source", name))
 			continue
 		}
-		compareFuncInfo(fmt.Sprintf("function %s", name), df, af, file, srcStr, result)
+		if !sigMatch(df.SignatureText, af.SignatureText) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s signature mismatch: .lyric=%q, source=%q", name, df.SignatureText, af.SignatureText))
+		}
 	}
 }
 
-func compareFuncInfo(context string, declared, actual *extract.FuncInfo, file, srcStr string, result *VerifyResult) {
-	if len(declared.Params) != len(actual.Params) {
-		result.add(SevError, file, srcStr, fmt.Sprintf("%s: param count mismatch: LDD=%d, source=%d", context, len(declared.Params), len(actual.Params)))
-	} else {
-		for i, dp := range declared.Params {
-			ap := actual.Params[i]
-			if !typesMatch(dp.Type, ap.Type) {
-				result.add(SevError, file, srcStr, fmt.Sprintf("%s: param %d type mismatch: LDD=%s, source=%s", context, i+1, dp.Type, ap.Type))
-			}
+func compareTypeDefs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.TypeDefs) {
+		dt := declared.TypeDefs[name]
+		at, ok := actual.TypeDefs[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("typedef %s declared in .lyric but not found in source", name))
+			continue
 		}
-	}
-	if len(declared.Returns) != len(actual.Returns) {
-		result.add(SevError, file, srcStr, fmt.Sprintf("%s: return count mismatch: LDD=%d, source=%d", context, len(declared.Returns), len(actual.Returns)))
-	} else {
-		for i, dr := range declared.Returns {
-			ar := actual.Returns[i]
-			if !typesMatch(dr, ar) {
-				result.add(SevError, file, srcStr, fmt.Sprintf("%s: return %d type mismatch: LDD=%s, source=%s", context, i+1, dr, ar))
-			}
+		if !typesMatch(dt.Underlying, at.Underlying) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("typedef %s underlying type mismatch: .lyric=%s, source=%s", name, dt.Underlying, at.Underlying))
 		}
 	}
 }
 
 func checkCompleteness(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
-	// Build set of declared names
-	declaredNames := make(map[string]bool)
+	declaredNames := map[string]bool{}
 	for name := range declared.Structs {
 		declaredNames[name] = true
 	}
@@ -851,61 +585,77 @@ func checkCompleteness(declared, actual *extract.PackageInfo, file, srcStr strin
 		declaredNames[name] = true
 	}
 
-	// Check exported types
-	var missingTypes []string
+	var missing []string
 	for name := range actual.Structs {
 		if IsExported(name) && !declaredNames[name] {
-			missingTypes = append(missingTypes, name)
+			missing = append(missing, "struct "+name)
 		}
 	}
 	for name := range actual.Interfaces {
 		if IsExported(name) && !declaredNames[name] {
-			missingTypes = append(missingTypes, name)
+			missing = append(missing, "interface "+name)
 		}
 	}
 	for name := range actual.TypeDefs {
 		if IsExported(name) && !declaredNames[name] {
-			missingTypes = append(missingTypes, name)
+			missing = append(missing, "typedef "+name)
 		}
 	}
-	sort.Strings(missingTypes)
-	for _, name := range missingTypes {
-		result.add(SevError, file, srcStr, fmt.Sprintf("exported type %s not documented in LDD", name))
-	}
-
-	// Check exported functions
-	var missingFuncs []string
 	for name := range actual.Functions {
 		if IsExported(name) && !declaredNames[name] {
-			missingFuncs = append(missingFuncs, name)
+			missing = append(missing, "function "+name)
 		}
 	}
-	sort.Strings(missingFuncs)
-	for _, name := range missingFuncs {
-		result.add(SevError, file, srcStr, fmt.Sprintf("exported function %s not documented in LDD", name))
+	sort.Strings(missing)
+	for _, kind := range missing {
+		result.add(SevError, file, srcStr, fmt.Sprintf("exported %s not documented in .lyric", kind))
 	}
 }
 
-// typesMatch compares two Go type strings, handling package prefix stripping.
+// sigMatch compares two function signatures with the spec §7 normalization:
+// strip leading/trailing whitespace, collapse runs of ASCII whitespace to a
+// single space, then byte-equal.
+func sigMatch(a, b string) bool {
+	return normalizeSig(a) == normalizeSig(b)
+}
+
+func normalizeSig(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	inSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' || c == '\t' {
+			if !inSpace {
+				b.WriteByte(' ')
+				inSpace = true
+			}
+		} else {
+			b.WriteByte(c)
+			inSpace = false
+		}
+	}
+	return b.String()
+}
+
+// typesMatch compares two Go type strings, handling the special cases of
+// package-prefix qualifiers and `any` ↔ `interface{}`.
 func typesMatch(a, b string) bool {
-	if a == b {
+	if sigMatch(a, b) {
 		return true
 	}
 	if a == "" || b == "" {
-		return true // can't compare embedded fields
+		return true // tolerated for embedded fields
 	}
-	// any == interface{}
 	if (a == "any" && b == "interface{}") || (a == "interface{}" && b == "any") {
 		return true
 	}
-	// Strip package prefixes for comparison
 	if stripPackagePrefix(a) == stripPackagePrefix(b) {
 		return true
 	}
 	return false
 }
 
-// stripPackagePrefix removes Go package qualifiers from a type string.
 func stripPackagePrefix(goType string) string {
 	if strings.HasPrefix(goType, "*") {
 		return "*" + stripPackagePrefix(goType[1:])

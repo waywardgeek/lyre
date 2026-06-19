@@ -108,7 +108,7 @@ func cmdVerify(args []string) error {
 		lang := extract.DetectLanguage(path)
 		switch lang {
 		case "go":
-			result, err := golang.VerifyGoLDD(path)
+			result, err := golang.VerifyGo(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -234,7 +234,7 @@ func cmdUpdate(args []string) error {
 				fmt.Printf("updated %s\n", path)
 			}
 		case "go":
-			added, err := golang.UpdateGoLDD(path)
+			added, err := golang.UpdateGo(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -291,7 +291,7 @@ func cmdGen(args []string) error {
 	lang := detectDirLanguage(pkgDir)
 	switch lang {
 	case "go":
-		outPath, content, err := golang.GenerateLDDFile(pkgDir)
+		outPath, content, err := golang.GenerateGo(pkgDir)
 		if err != nil {
 			return err
 		}
@@ -342,6 +342,32 @@ func cmdGen(args []string) error {
 		return fmt.Errorf("unsupported language in %s (found: %s)", pkgDir, lang)
 	}
 	return nil
+}
+
+// --- fmt ---
+
+// cmdFmt formats .lyric files in-place.
+//
+// TODO: real implementation. Currently a stub that errors clearly so the
+// build passes. The v2 .lyric format (see cr/docs/rich-doc-upgrade-plan.md)
+// will need a dedicated formatter in pkg/ldd/; this stub will be replaced
+// when that lands.
+func cmdFmt(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: lyre fmt <file.lyric> [...]")
+	}
+	return fmt.Errorf("lyre fmt: not yet implemented (see cr/docs/rich-doc-upgrade-plan.md)")
+}
+
+// --- legacy update ---
+
+// runUpdate is the legacy plain-.lyric update path (pre-.ly.lyric, pre-v2).
+//
+// TODO: real implementation, or delete callers. Currently a stub. Plain
+// .lyric files in the old Forge-style syntax are vanishingly rare and will
+// be migrated to v2 format in Phase 6 of the rich-doc upgrade sprint.
+func runUpdate(path string, prune bool) error {
+	return fmt.Errorf("lyre update: legacy plain-.lyric update is not implemented for %s (use .ly.lyric files, or wait for v2 format migration)", path)
 }
 
 // detectDirLanguage checks what source files are in a directory.

@@ -141,7 +141,7 @@ func convertPackageJSON(raw *tsPackageJSON) *extract.PackageInfo {
 		si.File = s.File
 		si.Line = s.Line
 		for fn, ft := range s.Fields {
-			si.Fields[fn] = ft
+			si.SetField(fn, ft)
 		}
 		for mn, mf := range s.Methods {
 			si.Methods[mn] = convertFuncJSON(mf)
@@ -294,8 +294,8 @@ func renderTsLDD(info *extract.PackageInfo, sourceFiles []string) string {
 		writeTsDoc(&b, cls.Doc)
 		writeTsLocation(&b, cls.File, cls.Line)
 		b.WriteString(fmt.Sprintf("class %s {\n", name))
-		for _, fn := range sortedStringMapKeys(cls.Fields) {
-			b.WriteString(fmt.Sprintf("  %s: %s;\n", fn, cls.Fields[fn]))
+		for _, f := range extract.SortedFieldsByName(cls.Fields) {
+			b.WriteString(fmt.Sprintf("  %s: %s;\n", f.Name, f.SignatureText))
 		}
 		for _, mn := range sortedFuncKeys(cls.Methods) {
 			mf := cls.Methods[mn]
@@ -579,8 +579,8 @@ func UpdateTsLDD(lddPath string) (added []string, err error) {
 		writeTsDoc(&newDecls, cls.Doc)
 		writeTsLocation(&newDecls, cls.File, cls.Line)
 		newDecls.WriteString(fmt.Sprintf("class %s {\n", name))
-		for _, fn := range sortedStringMapKeys(cls.Fields) {
-			newDecls.WriteString(fmt.Sprintf("  %s: %s;\n", fn, cls.Fields[fn]))
+		for _, f := range extract.SortedFieldsByName(cls.Fields) {
+			newDecls.WriteString(fmt.Sprintf("  %s: %s;\n", f.Name, f.SignatureText))
 		}
 		for _, mn := range sortedFuncKeys(cls.Methods) {
 			mf := cls.Methods[mn]
@@ -653,8 +653,8 @@ func splitAtIndexMarkerTs(text string) (human string, rest string) {
 func mergeTsInfo(dst, src *extract.PackageInfo) {
 	for k, v := range src.Structs {
 		if existing, ok := dst.Structs[k]; ok {
-			for fk, fv := range v.Fields {
-				existing.Fields[fk] = fv
+			for _, f := range v.Fields {
+				existing.SetField(f.Name, f.SignatureText)
 			}
 			for mk, mv := range v.Methods {
 				existing.Methods[mk] = mv

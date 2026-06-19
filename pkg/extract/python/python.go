@@ -172,7 +172,7 @@ func convertPackageJSON(raw *pyPackageJSON) *extract.PackageInfo {
 		si.File = s.File
 		si.Line = s.Line
 		for fn, ft := range s.Fields {
-			si.Fields[fn] = ft
+			si.SetField(fn, ft)
 		}
 		for mn, mf := range s.Methods {
 			si.Methods[mn] = convertFuncJSON(mf)
@@ -363,12 +363,12 @@ func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
 		writePyDoc(&b, si.Doc)
 		writePyLocation(&b, si.File, si.Line)
 		b.WriteString(fmt.Sprintf("class %s:\n", name))
-		fieldNames := sortedStringMapKeys(si.Fields)
-		for _, fn := range fieldNames {
-			b.WriteString(fmt.Sprintf("    %s: %s\n", fn, si.Fields[fn]))
+		sortedFields := extract.SortedFieldsByName(si.Fields)
+		for _, f := range sortedFields {
+			b.WriteString(fmt.Sprintf("    %s: %s\n", f.Name, f.SignatureText))
 		}
 		methodNames := sortedMethodKeys(si.Methods)
-		if len(fieldNames) > 0 && len(methodNames) > 0 {
+		if len(sortedFields) > 0 && len(methodNames) > 0 {
 			b.WriteString("\n")
 		}
 		for _, mn := range methodNames {
@@ -377,7 +377,7 @@ func GeneratePyLDDFile(pkgDir string) (outPath, content string, err error) {
 			writePyLocation(&b, mf.File, mf.Line)
 			b.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", mf)))
 		}
-		if len(fieldNames) == 0 && len(methodNames) == 0 {
+		if len(sortedFields) == 0 && len(methodNames) == 0 {
 			b.WriteString("    ...\n")
 		}
 	}
@@ -472,14 +472,14 @@ func comparePyStructs(declared, actual *extract.PackageInfo, file, src string, r
 			continue
 		}
 		// Check fields
-		for fn, dt := range ds.Fields {
-			at, ok := as.Fields[fn]
+		for _, df := range ds.Fields {
+			at, ok := as.FieldSig(df.Name)
 			if !ok {
-				r.add(SevError, file, src, fmt.Sprintf("class %s: field %s declared in LDD but not in source", name, fn))
+				r.add(SevError, file, src, fmt.Sprintf("class %s: field %s declared in LDD but not in source", name, df.Name))
 				continue
 			}
-			if normalizeType(dt) != normalizeType(at) {
-				r.add(SevError, file, src, fmt.Sprintf("class %s: field %s type mismatch: LDD=%s, source=%s", name, fn, dt, at))
+			if normalizeType(df.SignatureText) != normalizeType(at) {
+				r.add(SevError, file, src, fmt.Sprintf("class %s: field %s type mismatch: LDD=%s, source=%s", name, df.Name, df.SignatureText, at))
 			}
 		}
 		// Check methods
@@ -593,18 +593,18 @@ func UpdatePyLDD(lddPath string) (added []string, err error) {
 		writePyDoc(&newDecls, as.Doc)
 		writePyLocation(&newDecls, as.File, as.Line)
 		newDecls.WriteString(fmt.Sprintf("class %s:\n", name))
-		fieldNames := sortedStringMapKeys(as.Fields)
-		for _, fn := range fieldNames {
-			newDecls.WriteString(fmt.Sprintf("    %s: %s\n", fn, as.Fields[fn]))
+		sortedFields := extract.SortedFieldsByName(as.Fields)
+		for _, f := range sortedFields {
+			newDecls.WriteString(fmt.Sprintf("    %s: %s\n", f.Name, f.SignatureText))
 		}
 		methodNames := sortedMethodKeys(as.Methods)
-		if len(fieldNames) > 0 && len(methodNames) > 0 {
+		if len(sortedFields) > 0 && len(methodNames) > 0 {
 			newDecls.WriteString("\n")
 		}
 		for _, mn := range methodNames {
 			newDecls.WriteString(fmt.Sprintf("    %s\n", buildPyFuncSig(mn, "self", as.Methods[mn])))
 		}
-		if len(fieldNames) == 0 && len(methodNames) == 0 {
+		if len(sortedFields) == 0 && len(methodNames) == 0 {
 			newDecls.WriteString("    ...\n")
 		}
 		added = append(added, "class "+name)
@@ -718,8 +718,8 @@ func writePyLocation(b *strings.Builder, file string, line int) {
 func mergePyInfo(dst, src *extract.PackageInfo) {
 	for k, v := range src.Structs {
 		if existing, ok := dst.Structs[k]; ok {
-			for fk, fv := range v.Fields {
-				existing.Fields[fk] = fv
+			for _, f := range v.Fields {
+				existing.SetField(f.Name, f.SignatureText)
 			}
 			for mk, mv := range v.Methods {
 				existing.Methods[mk] = mv

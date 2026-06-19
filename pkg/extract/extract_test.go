@@ -1,0 +1,172 @@
+// Round-trip and rich-doc tests for the shared data model. Added in Phase 1
+// of the rich-doc upgrade (see cr/docs/rich-doc-upgrade-plan.md) to lock in
+// the breaking change of Fields from map[string]string to []FieldInfo and the
+// new rich-doc fields (ModuleWhy, Docs, Invariants, per-decl Why/Source,
+// per-field Doc).
+
+package extract
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
+
+// populatedPackage builds a PackageInfo exercising every rich-doc field at
+// least once. Used by both the round-trip test and as documentation of the
+// shape the LDL writer will need to handle in Phase 2.
+func populatedPackage() *PackageInfo {
+	p := NewPackageInfo("checker")
+	p.ModuleWhy = "Three-phase type checker with expression annotation."
+	p.Docs = []DocBlock{
+		{Title: "Architecture", Content: "Phase 0 pre-registers all class names.\nPhase 1 registers fields and methods.\nPhase 2 checks bodies."},
+	}
+	p.Invariants = []Invariant{
+		{
+			Title:      "Three-Phase Ordering",
+			Content:    "Phase 0 MUST complete on ALL blocks before ANY Phase 1 begins.",
+			VerifiedBy: []string{"TestInvariant_Checker_ThreePhaseOrdering"},
+		},
+		{
+			Title:      "AST Expr Pointer Stability",
+			Content:    "Use &slice[i], never range copies, because checkExpr annotates ResolvedType.",
+			Procedural: true,
+		},
+	}
+
+	s := NewStructInfo()
+	s.IsClass = true
+	s.File = "checker.ly"
+	s.Line = 147
+	s.Why = "Tracks nesting depth inside loops for break/continue validation."
+	s.Source = "checker.ly:147"
+	s.SetField("errors", "[string]")
+	s.SetField("iface_decls", "Dict<Sym, InterfaceDecl>")
+	s.SetFieldDoc("iface_decls", "Used during Phase 1.5 to link impl blocks across blocks.")
+	s.Methods["CheckFile"] = &FuncInfo{
+		SignatureText: "CheckFile(self, file: File)",
+		File:          "checker.ly",
+		Line:          4695,
+		Why:           "Primary entry point. Registers types, then checks bodies.",
+		Source:        "checker.ly:4695",
+	}
+	p.Structs["Checker"] = s
+
+	i := NewInterfaceInfo()
+	i.File = "checker.ly"
+	i.Line = 200
+	i.Why = "Type-checking dispatch surface."
+	i.Source = "checker.ly:200"
+	p.Interfaces["TypeChecker"] = i
+
+	p.Functions["pkg_init"] = &FuncInfo{
+		SignatureText: "pkg_init() -> error",
+		File:          "init.ly",
+		Line:          1,
+		Why:           "Package-level initialization.",
+		Source:        "init.ly:1",
+	}
+
+	p.TypeDefs["Sym"] = &TypeDefInfo{
+		Underlying: "u64",
+		Why:        "Interned symbol handle.",
+		File:       "sym.ly",
+		Line:       12,
+		Source:     "sym.ly:12",
+	}
+
+	return p
+}
+
+// TestPackageInfo_JSONRoundTrip locks in that every rich-doc field marshals
+// and unmarshals losslessly. Pre-Phase-1, half of these fields didn't exist.
+// Post-Phase-1 they're load-bearing, so a regression here breaks the LDL
+// writer in Phase 2.
+func TestPackageInfo_JSONRoundTrip(t *testing.T) {
+	p := populatedPackage()
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got PackageInfo
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(p, &got) {
+		t.Fatalf("round-trip mismatch.\n want: %#v\n  got: %#v", p, &got)
+	}
+}
+
+// TestStructInfo_FieldHelpers verifies the helper methods that bridge legacy
+// callers (map-style access) to the new slice-of-FieldInfo storage.
+func TestStructInfo_FieldHelpers(t *testing.T) {
+	s := NewStructInfo()
+
+	// Empty starts.
+	if s.HasField("x") {
+		t.Fatalf("empty struct should not have field x")
+	}
+	if _, ok := s.FieldSig("x"); ok {
+		t.Fatalf("empty struct should not have signature for x")
+	}
+
+	// SetField appends.
+	s.SetField("first", "int")
+	s.SetField("second", "string")
+	if len(s.Fields) != 2 {
+		t.Fatalf("want 2 fields, got %d", len(s.Fields))
+	}
+	if s.Fields[0].Name != "first" || s.Fields[1].Name != "second" {
+		t.Fatalf("source-order broken: %#v", s.Fields)
+	}
+
+	// SetField on existing name updates in place (no append).
+	s.SetField("first", "int64")
+	if len(s.Fields) != 2 {
+		t.Fatalf("re-set should not append; got %d fields", len(s.Fields))
+	}
+	if sig, _ := s.FieldSig("first"); sig != "int64" {
+		t.Fatalf("re-set didn't update sig, got %q", sig)
+	}
+
+	// SetFieldDoc on existing field preserves SignatureText.
+	s.SetFieldDoc("first", "the first field")
+	if s.Fields[0].SignatureText != "int64" {
+		t.Fatalf("SetFieldDoc clobbered SignatureText: %#v", s.Fields[0])
+	}
+	if s.Fields[0].Doc != "the first field" {
+		t.Fatalf("SetFieldDoc didn't set Doc: %#v", s.Fields[0])
+	}
+
+	// SetFieldDoc on missing field creates with empty SignatureText.
+	s.SetFieldDoc("third", "doc only")
+	if len(s.Fields) != 3 || s.Fields[2].SignatureText != "" || s.Fields[2].Doc != "doc only" {
+		t.Fatalf("SetFieldDoc-on-missing broken: %#v", s.Fields)
+	}
+
+	// FieldNames preserves source order.
+	want := []string{"first", "second", "third"}
+	if got := s.FieldNames(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("FieldNames want %v, got %v", want, got)
+	}
+}
+
+// TestSortedFieldsByName confirms the helper used by legacy emit code.
+func TestSortedFieldsByName(t *testing.T) {
+	in := []FieldInfo{
+		{Name: "zeta"},
+		{Name: "alpha"},
+		{Name: "mu"},
+	}
+	got := SortedFieldsByName(in)
+	want := []string{"alpha", "mu", "zeta"}
+	for i, f := range got {
+		if f.Name != want[i] {
+			t.Fatalf("at %d want %s got %s", i, want[i], f.Name)
+		}
+	}
+	// Input must not be mutated.
+	if in[0].Name != "zeta" {
+		t.Fatalf("SortedFieldsByName mutated input slice")
+	}
+}
