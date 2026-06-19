@@ -1109,3 +1109,48 @@ Phase 5 (`lyre gen --rich`) → Phase 6 (v1→v2 migration; pick up the
 deferred `isLyLyric` / plain-`.lyric` cleanup) → **Phase 7.5** (UDD
 enforcement extension in CR server — MUST land before Phase 7) → Phase 7
 (docs + backfill `checker.ly.lyric`).
+
+
+### 2026-06-19 — Phase 5 complete
+
+`lyre gen --rich` shipped. New `pkg/gen/` package, single function
+`SeedRichPlaceholders(p *extract.PackageInfo)` mutates a freshly-extracted
+PackageInfo in place to fill every empty rich-doc slot with either a
+TODO placeholder or a cleaned-up first line of the legacy native-source
+`Doc` field.
+
+**Pipeline shift in `cmdGen`**: the `--rich` path bypasses
+`Generate<Lang>` and instead runs `Extract<Lang>` → `SeedRichPlaceholders`
+→ `udd.Write` → atomic write. Per-language extractors are unchanged.
+The plain `lyre gen` (no `--rich`) path is unchanged.
+
+**Seeding contract** (verified by `TestSeedRich_LintContract_*`): after
+`SeedRichPlaceholders` on a clean PackageInfo, `lyre lint` reports only
+W008 (the TODO placeholders themselves), plus W003 / W005 / W006 / W007
+when the underlying structure warrants — seeding does NOT manufacture
+invariants (W003/W006) or per-field doc on enum-bearing structs (W005),
+both of which are caught-bug records / semantic clarifications that need
+human judgment.
+
+**Doc → Why fallback**: per-decl `Why` is seeded from the cleaned first
+non-empty line of the legacy `Doc` field when available (Go docstrings,
+Python docstrings, etc.); otherwise the generic
+`TODO: explain <Name>.` placeholder is used. Idempotent — pre-filled
+prose is never overwritten.
+
+**Dogfood**: regenerated `pkg/extract/golang/golang.go.lyric` from
+scratch under `--rich`; lint produced exactly the expected mix (21
+W008s + 1 W005 on the `Finding` struct's enum-typed `Severity` field).
+Restored the original file post-dogfood — no source-tree disturbance.
+
+`go test ./...` 100% green. 13 new tests in `pkg/gen/`, all pass first run.
+
+Velocity: ~25 min vs 1–2h plan estimate. Pattern continues to come in
+well under the single-digit-hours regime.
+
+### Up next
+
+Phase 6 (v1→v2 migration; pick up the deferred `isLyLyric` /
+plain-`.lyric` cleanup) → **Phase 7.5** (UDD enforcement extension in
+CR server — MUST land before Phase 7) → Phase 7 (docs + backfill
+`checker.ly.lyric`).

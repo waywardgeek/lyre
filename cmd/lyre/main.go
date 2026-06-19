@@ -11,6 +11,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
@@ -18,6 +19,7 @@ import (
 	lyricext "github.com/waywardgeek/lyre/pkg/extract/lyric"
 	"github.com/waywardgeek/lyre/pkg/extract/python"
 	tsext "github.com/waywardgeek/lyre/pkg/extract/typescript"
+	"github.com/waywardgeek/lyre/pkg/gen"
 	"github.com/waywardgeek/lyre/pkg/lint"
 	"github.com/waywardgeek/lyre/pkg/udd"
 	"github.com/waywardgeek/lyre/pkg/verifier"
@@ -287,68 +289,110 @@ func cmdUpdate(args []string) error {
 // --- gen ---
 
 func cmdGen(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: lyre gen <package-dir>")
+	rich := false
+	var posArgs []string
+	for _, a := range args {
+		if a == "--rich" {
+			rich = true
+		} else {
+			posArgs = append(posArgs, a)
+		}
 	}
-	pkgDir := args[0]
+	if len(posArgs) != 1 {
+		return fmt.Errorf("usage: lyre gen [--rich] <package-dir>")
+	}
+	pkgDir := posArgs[0]
 
 	// Detect language from source files in the directory
 	lang := detectDirLanguage(pkgDir)
+
+	// Rich path: Extract → Seed → udd.Write. Bypasses the legacy
+	// language-specific GenerateXxx because the seeding step is
+	// language-agnostic and lives in pkg/gen.
+	if rich {
+		return genRich(pkgDir, lang)
+	}
+
 	switch lang {
 	case "go":
 		outPath, content, err := golang.GenerateGo(pkgDir)
 		if err != nil {
 			return err
 		}
-		if _, err := os.Stat(outPath); err == nil {
-			return fmt.Errorf("%s already exists — use lyre update instead", outPath)
-		}
-		if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-			return err
-		}
-		fmt.Printf("generated %s\n", outPath)
+		return writeGenerated(outPath, content)
 	case "python":
 		outPath, content, err := python.GeneratePy(pkgDir)
 		if err != nil {
 			return err
 		}
-		if _, err := os.Stat(outPath); err == nil {
-			return fmt.Errorf("%s already exists — use lyre update instead", outPath)
-		}
-		if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-			return err
-		}
-		fmt.Printf("generated %s\n", outPath)
+		return writeGenerated(outPath, content)
 	case "lyric":
 		outPath, content, err := lyricext.GenerateLy(pkgDir)
 		if err != nil {
 			return err
 		}
-		if _, err := os.Stat(outPath); err == nil {
-			return fmt.Errorf("%s already exists — use lyre update instead", outPath)
-		}
-		if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-			return err
-		}
-		fmt.Printf("generated %s\n", outPath)
+		return writeGenerated(outPath, content)
 	case "typescript":
 		outPath, content, err := tsext.GenerateTs(pkgDir)
 		if err != nil {
 			return err
 		}
-		if _, err := os.Stat(outPath); err == nil {
-			return fmt.Errorf("%s already exists — use lyre update instead", outPath)
-		}
-		if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-			return err
-		}
-		fmt.Printf("generated %s\n", outPath)
+		return writeGenerated(outPath, content)
 	default:
 		return fmt.Errorf("unsupported language in %s (found: %s)", pkgDir, lang)
 	}
+}
+
+// writeGenerated writes content to outPath only if it doesn't already exist.
+// Shared by both --rich and plain gen paths.
+func writeGenerated(outPath, content string) error {
+	if _, err := os.Stat(outPath); err == nil {
+		return fmt.Errorf("%s already exists — use lyre update instead", outPath)
+	}
+	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
+		return err
+	}
+	fmt.Printf("generated %s\n", outPath)
 	return nil
 }
 
+// genRich runs the --rich pipeline: extract a *PackageInfo via the
+// language-specific extractor, seed TODO placeholders into every empty
+// rich-doc slot, then write via udd.Write. The seeding step (pkg/gen)
+// is language-agnostic.
+func genRich(pkgDir, lang string) error {
+	var (
+		p   *extract.PackageInfo
+		err error
+		ext string
+	)
+	switch lang {
+	case "go":
+		p, err = golang.ExtractGo(pkgDir)
+		ext = "go.lyric"
+	case "python":
+		p, err = python.ExtractPy(pkgDir)
+		ext = "py.lyric"
+	case "lyric":
+		p, err = lyricext.ExtractLy(pkgDir)
+		ext = "ly.lyric"
+	case "typescript":
+		p, err = tsext.ExtractTs(pkgDir)
+		ext = "ts.lyric"
+	default:
+		return fmt.Errorf("unsupported language in %s (found: %s)", pkgDir, lang)
+	}
+	if err != nil {
+		return err
+	}
+	gen.SeedRichPlaceholders(p)
+	absDir, err := filepath.Abs(pkgDir)
+	if err != nil {
+		return err
+	}
+	outPath := filepath.Join(absDir, p.Name+"."+ext)
+	return writeGenerated(outPath, udd.Write(p))
+}
 // --- lint ---
 
 // cmdLint runs the language-agnostic linter on one or more .lyric files.
