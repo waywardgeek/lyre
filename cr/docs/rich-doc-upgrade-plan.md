@@ -683,3 +683,116 @@ errors / 0 warnings.
 replaces the `extract_api.js` PATH-dependent shim with a direct
 extractor that doesn't need a global `typescript` install. Will unblock
 the 9 currently-failing TS tests as a side effect.
+
+### 2026-06-19 — Phase 3b complete
+
+TypeScript extractor adaptation. Full rewrite of `pkg/extract/typescript/`.
+~1h, vs ½-day plan estimate. All tests green; `go test ./...` is 100% green
+for the first time this sprint (TS was the last red package).
+
+Files landed:
+
+- `pkg/extract/typescript/typescript.go` (~600 lines, full rewrite). New
+  v2 entry points: `ExtractTs(srcDir) → *PackageInfo`, `GenerateTs(srcDir)
+  → (outPath, content, err)`, `UpdateTs(lyricPath) → (added, err)`,
+  `VerifyTs(lyricPath) → (*VerifyResult, err)`. Same shape as Phase 3a's
+  Go extractor exactly. Old v1 surface (`ParseTsLDDMeta`, `ParseTsLDDFile`,
+  `GenerateTsLDDFile`, `UpdateTsLDD`, `VerifyTsLDD`, the manual fallback
+  parser `parseTsLDDManual`, the `// --- index ---` marker layout, the
+  `//ldd:source`/`//ldd:why` directive scraping) is gone. No migration
+  shim, no back-compat. JSDoc extraction in `extract_api.js` is
+  unchanged — it populates the legacy `Doc` field on PackageInfo decls
+  but is NOT round-tripped through `.lyric` (per the core principle, UDD
+  prose lives in `.lyric` only; the extractor-internal `Doc` field is
+  for future ad-hoc consumers).
+- `pkg/extract/typescript/typescript_test.go` (~490 lines, full rewrite).
+  18 tests covering ExtractTs (class+methods, interface, typedef+function,
+  skipping unexported/underscored, skipping test/spec files), GenerateTs
+  (output format, udd round-trip), VerifyTs (clean, missing function,
+  undocumented export, field type mismatch), UpdateTs (adds new export,
+  idempotent, **preserves human prose using the cleaner approach**,
+  refreshes positions, multi-file source list).
+- `pkg/extract/typescript/README.md` (new). Documents the node.js
+  dependency, the `npm install` path, and the public API.
+- `pkg/extract/typescript/package.json` and `package-lock.json` now
+  committed (previously untracked). `node_modules/` is gitignored in a
+  new `.gitignore` at repo root.
+- `.gitignore` (new at repo root). Adds `lyre` binary and
+  `pkg/extract/typescript/node_modules/`. The `lyre` binary was
+  previously implicitly gitignored or just absent; making it explicit.
+- `cmd/lyre/main.go` updated: 3 call sites now reference `tsext.VerifyTs`
+  / `tsext.UpdateTs` / `tsext.GenerateTs`.
+
+**Spec touched**: none. Phase 3b is pure implementation against the locked
+v2 format.
+
+**Design decisions made**:
+
+1. **Script execution via `runtime.Caller(0)`**. The legacy approach
+   embedded `extract_api.js` via `//go:embed` and wrote it to `/tmp/`
+   before invoking — which broke `require('typescript')` because Node's
+   resolution couldn't find a sibling `node_modules`. New approach uses
+   `runtime.Caller(0)` to locate the package dir at runtime and invokes
+   the on-disk `extract_api.js` directly, with `NODE_PATH` set to the
+   sibling `node_modules`. Drops the `//go:embed`. Trade-off: a built
+   binary depends on the source-tree layout being present at runtime;
+   acceptable for the sprint scope. Production deploy story TBD (likely
+   bundle node_modules with the binary).
+
+2. **Lazy `npm install`**. If `node_modules` is missing on first call,
+   `runExtractScript` invokes `npm install --silent --no-progress
+   --no-audit --no-fund` once to populate it. Keeps fresh-checkout UX
+   one-step. Errors propagate cleanly if `npm` is absent.
+
+3. **Field `SignatureText` = type-only** (e.g. `number`, `string[]`,
+   `[number, number]`). Mirrors Phase 3a's Go convention.
+
+4. **Method/Func `SignatureText` = `Name(p1: t1, p2: t2): retType`** —
+   no `function` keyword, no trailing semicolon, no receiver clause.
+   Built in Go from the JSON `params` and `returns` arrays the script
+   emits. Whitespace-normalized comparison (spec §7) handles
+   any incidental differences.
+
+5. **Constructor parameter properties surface as fields.** TypeScript's
+   `constructor(public center: [number, number], radius: number)` makes
+   `center` a class field. The legacy extractor handled this correctly;
+   preserved in the rewrite. The constructor itself surfaces as a
+   `constructor` method.
+
+6. **`UpdateTs` merge policy** mirrors `UpdateGo` exactly: source wins
+   on signatures, positions, and the module-level `source:` list.
+   Existing wins on all human prose. New exports are added; absent ones
+   not pruned (verify reports drift; a future `--prune` flag covers
+   destructive cleanup).
+
+7. **Module name = directory basename.** TS has no native package name
+   like Go's `package` declaration; the directory name is the natural
+   choice. Tests use stable subdir names ("shapes") rather than
+   `t.TempDir()`'s `/001` to ensure the basename is a valid identifier
+   per spec §3 (`[A-Za-z_][A-Za-z0-9_]*`). Real-world dirs almost
+   always satisfy this — no sanitization added.
+
+8. **`typesMatch` simplified for TS**: spec §7 whitespace normalization
+   only. No `any`↔`interface{}` quirk like Go has, no package-prefix
+   stripping (TS uses module-qualified names rather than package-prefix
+   qualifiers, and the extractor emits unqualified by default).
+
+**Cleaner test fixture approach proven**: `TestUpdateTs_PreservesHumanProse`
+constructs a `PackageInfo` with prose set, writes it via `udd.Write` to
+seed the fixture, then runs `UpdateTs`. No fragile string-splicing
+(unlike Phase 3a's `TestUpdateGo_PreservesHumanProse`). This is the
+canonical pattern for future per-language tests. Phase 3a's test could
+be retroactively refactored to this shape; logged for a follow-up
+sweep.
+
+**Test status**: `go test ./...` from `~/projects/lyre/` is 100% green
+across all packages (extract, extract/golang, extract/python,
+extract/typescript, parser, udd, verifier). Confirmed lazy-install
+path by removing `node_modules/` and re-running tests — npm install
+completes in ~1s (cached) and tests pass on the fresh tree.
+
+**Up next**: Phase 3c — Lyric extractor. ~1 day plan estimate. Same
+shape: `ExtractLy/GenerateLy/UpdateLy/VerifyLy`. Extends
+`~/projects/lyric/tools/extract_api.ly` to emit verbatim source spans
+per decl, then the Go wrapper converts JSON → `*PackageInfo`. Risk 1
+was resolved earlier (no touch to `lyric.stable`).

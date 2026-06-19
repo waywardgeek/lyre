@@ -167,7 +167,7 @@ func cmdVerify(args []string) error {
 				}
 			}
 		case "typescript":
-			result, err := tsext.VerifyTsLDD(path)
+			result, err := tsext.VerifyTs(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -260,7 +260,7 @@ func cmdUpdate(args []string) error {
 				}
 			}
 		case "typescript":
-			added, err := tsext.UpdateTsLDD(path)
+			added, err := tsext.UpdateTs(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -327,7 +327,7 @@ func cmdGen(args []string) error {
 		}
 		fmt.Printf("generated %s\n", outPath)
 	case "typescript":
-		outPath, content, err := tsext.GenerateTsLDDFile(pkgDir)
+		outPath, content, err := tsext.GenerateTs(pkgDir)
 		if err != nil {
 			return err
 		}

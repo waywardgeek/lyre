@@ -1,31 +1,60 @@
-// Package typescript provides TypeScript-syntax LDD file generation and parsing.
-// A .ts.lyric file uses TypeScript declaration syntax (.d.ts style) with
-// //ldd: metadata comments, serving as a living understanding document for a
-// TypeScript module.
+// Package typescript's `.ts.lyric` v2 entry points: ExtractTs, GenerateTs,
+// UpdateTs, VerifyTs. The `.ts.lyric` file is the persistent UDD artifact
+// for a TypeScript directory — a small declarative DSL parsed/written by
+// pkg/udd, whose payload lines (field types, method signatures, function
+// signatures) are verbatim TypeScript text treated as opaque strings.
+//
+// Architectural principle (rich-doc upgrade plan, top): UDD documentation
+// lives in the .lyric file ONLY, never as `// why:` or `/** doc */` smuggled
+// directives in TS source. Extractors are signatures-only. The legacy
+// //ldd:source, //ldd:why, and the parseTsLDDManual / index-marker layout
+// are gone.
+//
+// Extraction pipeline:
+//   - extract_api.js (on-disk in this package) shells out to the TypeScript
+//     Compiler API to parse a single .ts file. Returns JSON.
+//   - This package converts the JSON into an extract.PackageInfo with
+//     SignatureText fields populated for round-trip through the .lyric v2
+//     format.
+//   - Field SignatureText is type-only (e.g. "number", "string[]"). Method
+//     and function SignatureText is "Name(p1: t1, p2: t2): retType" — no
+//     `function` keyword, no trailing semicolon, no receiver clause.
 package typescript
 
 import (
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/extract"
+	"github.com/waywardgeek/lyre/pkg/udd"
 )
 
-//go:embed extract_api.js
-var extractScript []byte
+// packageDir is the on-disk directory of this Go package, used to locate
+// extract_api.js and node_modules/ at runtime. Resolved via runtime.Caller
+// at init time.
+var packageDir = func() string {
+	_, file, _, _ := runtime.Caller(0)
+	return filepath.Dir(file)
+}()
 
-// --- Severity / Finding / VerifyResult ---
+// --- VerifyResult / Finding / Severity ------------------------------------
 
+// VerifyResult holds all findings from a verification run.
+type VerifyResult struct {
+	Findings []Finding
+}
+
+// Severity levels.
 type Severity int
 
 const (
-	SevError   Severity = iota
+	SevError Severity = iota
 	SevWarning
 	SevInfo
 )
@@ -42,43 +71,66 @@ func (s Severity) String() string {
 	return "UNKNOWN"
 }
 
+// Finding is a single verification report.
 type Finding struct {
 	Severity Severity
+	File     string
+	Source   string
 	Message  string
 }
 
 func (f Finding) String() string {
-	return fmt.Sprintf("[%s] %s", f.Severity, f.Message)
+	loc := f.File
+	if f.Source != "" {
+		loc = fmt.Sprintf("%s ↔ %s", f.File, f.Source)
+	}
+	return fmt.Sprintf("[%s] %s: %s", f.Severity, loc, f.Message)
 }
 
-type VerifyResult struct {
-	Findings []Finding
+func (r *VerifyResult) add(sev Severity, file, source, msg string) {
+	r.Findings = append(r.Findings, Finding{
+		Severity: sev,
+		File:     file,
+		Source:   source,
+		Message:  msg,
+	})
 }
 
-// --- JSON types for extractor output ---
+// ErrorCount returns the number of SevError findings.
+func (r *VerifyResult) ErrorCount() int {
+	n := 0
+	for _, f := range r.Findings {
+		if f.Severity == SevError {
+			n++
+		}
+	}
+	return n
+}
+
+// --- JSON shape from extract_api.js ---------------------------------------
 
 type tsPackageJSON struct {
-	Name       string                    `json:"name"`
-	Structs    map[string]tsClassJSON    `json:"structs"`
-	Interfaces map[string]tsIfaceJSON    `json:"interfaces"`
-	Functions  map[string]tsFuncJSON     `json:"functions"`
-	TypeDefs   map[string]tsTypeDefJSON  `json:"typedefs"`
+	Name       string                   `json:"name"`
+	Structs    map[string]tsClassJSON   `json:"structs"`
+	Interfaces map[string]tsIfaceJSON   `json:"interfaces"`
+	Functions  map[string]tsFuncJSON    `json:"functions"`
+	TypeDefs   map[string]tsTypeDefJSON `json:"typedefs"`
 }
 
 type tsClassJSON struct {
-	Fields  map[string]string         `json:"fields"`
-	Methods map[string]tsFuncJSON     `json:"methods"`
-	Doc     string                    `json:"doc"`
-	File    string                    `json:"file"`
-	Line    int                       `json:"line"`
+	Fields  map[string]string     `json:"fields"`
+	Methods map[string]tsFuncJSON `json:"methods"`
+	Doc     string                `json:"doc"`
+	File    string                `json:"file"`
+	Line    int                   `json:"line"`
 }
 
 type tsIfaceJSON struct {
-	Fields  map[string]string         `json:"fields"`
-	Methods map[string]tsFuncJSON     `json:"methods"`
-	Doc     string                    `json:"doc"`
-	File    string                    `json:"file"`
-	Line    int                       `json:"line"`
+	Fields  map[string]string     `json:"fields"`
+	Methods map[string]tsFuncJSON `json:"methods"`
+	Doc     string                `json:"doc"`
+	File    string                `json:"file"`
+	Line    int                   `json:"line"`
 }
 
 type tsFuncJSON struct {
@@ -101,52 +153,141 @@ type tsTypeDefJSON struct {
 	Line       int    `json:"line"`
 }
 
-// --- Script execution ---
+// --- runExtractScript -----------------------------------------------------
 
-func runExtractScript(srcPath string) (*extract.PackageInfo, error) {
-	tmp, err := os.CreateTemp("", "lyre-extract-*.js")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp script: %w", err)
+// runExtractScript runs the on-disk extract_api.js against srcPath and
+// returns the decoded JSON. NODE_PATH is set so that require('typescript')
+// resolves the vendored module sibling to this package's node_modules.
+//
+// If node_modules is missing (e.g. fresh checkout), runs `npm install` once
+// to populate it. This keeps the dev/test UX one-step. Production deploy
+// is expected to provide node_modules out-of-band.
+func runExtractScript(srcPath string) (*tsPackageJSON, error) {
+	scriptPath := filepath.Join(packageDir, "extract_api.js")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return nil, fmt.Errorf("extract_api.js not found at %s: %w", scriptPath, err)
 	}
-	defer os.Remove(tmp.Name())
-
-	if _, err := tmp.Write(extractScript); err != nil {
-		tmp.Close()
-		return nil, fmt.Errorf("writing temp script: %w", err)
+	nodeModules := filepath.Join(packageDir, "node_modules")
+	if _, err := os.Stat(nodeModules); err != nil {
+		if err := ensureNodeModules(); err != nil {
+			return nil, err
+		}
 	}
-	tmp.Close()
-
-	out, err := exec.Command("node", tmp.Name(), srcPath).Output()
+	cmd := exec.Command("node", scriptPath, srcPath)
+	cmd.Env = append(os.Environ(), "NODE_PATH="+nodeModules)
+	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("extract_api.js failed: %s", strings.TrimSpace(string(ee.Stderr)))
+			return nil, fmt.Errorf("extract_api.js failed: %s",
+				strings.TrimSpace(string(ee.Stderr)))
 		}
 		return nil, fmt.Errorf("running node: %w", err)
 	}
-
 	var raw tsPackageJSON
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parsing extractor output: %w", err)
 	}
-
-	return convertPackageJSON(&raw), nil
+	return &raw, nil
 }
 
-func convertPackageJSON(raw *tsPackageJSON) *extract.PackageInfo {
-	info := extract.NewPackageInfo(raw.Name)
+// ensureNodeModules runs `npm install` in the package directory. Used on
+// fresh checkouts where node_modules hasn't been populated yet.
+func ensureNodeModules() error {
+	cmd := exec.Command("npm", "install", "--silent", "--no-progress", "--no-audit", "--no-fund")
+	cmd.Dir = packageDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("npm install in %s failed: %w\n%s", packageDir, err, out)
+	}
+	return nil
+}
 
-	for name, s := range raw.Structs {
+// --- ExtractTs ------------------------------------------------------------
+
+// ExtractTs parses every non-test, non-declaration .ts file in srcDir and
+// returns the public API as a *PackageInfo whose SignatureText fields are
+// populated for round-trip through the .lyric v2 format.
+//
+// Skips: .test.ts, .spec.ts, .d.ts, .ts.lyric, and files starting with `_`.
+// Only exported declarations are kept (the TS extractor enforces this).
+func ExtractTs(srcDir string) (*extract.PackageInfo, error) {
+	absDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return nil, err
+	}
+	files, err := scanTsFiles(absDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .ts files found in %s", srcDir)
+	}
+
+	p := extract.NewPackageInfo(filepath.Base(absDir))
+	p.ModuleSource = files
+
+	for _, name := range files {
+		raw, err := runExtractScript(filepath.Join(absDir, name))
+		if err != nil {
+			return nil, fmt.Errorf("extracting %s: %w", name, err)
+		}
+		mergeJSONInto(p, raw)
+	}
+	return p, nil
+}
+
+// scanTsFiles returns the sorted list of non-test, non-declaration, non-
+// underscore-prefixed .ts files in dir (basenames only).
+func scanTsFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".ts") {
+			continue
+		}
+		if strings.HasSuffix(name, ".test.ts") ||
+			strings.HasSuffix(name, ".spec.ts") ||
+			strings.HasSuffix(name, ".d.ts") ||
+			strings.HasSuffix(name, ".ts.lyric") {
+			continue
+		}
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// mergeJSONInto folds one source file's JSON into the accumulating
+// PackageInfo, converting each decl to its in-memory shape with the
+// canonical SignatureText forms.
+func mergeJSONInto(p *extract.PackageInfo, raw *tsPackageJSON) {
+	for name, cls := range raw.Structs {
 		si := extract.NewStructInfo()
-		si.Doc = s.Doc
-		si.File = s.File
-		si.Line = s.Line
-		for fn, ft := range s.Fields {
-			si.SetField(fn, ft)
+		si.IsClass = true
+		si.Doc = cls.Doc
+		si.File = cls.File
+		si.Line = cls.Line
+		if cls.File != "" && cls.Line > 0 {
+			si.Source = fmt.Sprintf("%s:%d", cls.File, cls.Line)
 		}
-		for mn, mf := range s.Methods {
-			si.Methods[mn] = convertFuncJSON(mf)
+		for _, fname := range sortedStringMapKeys(cls.Fields) {
+			si.SetField(fname, cls.Fields[fname])
 		}
-		info.Structs[name] = si
+		for _, mname := range sortedFuncJSONKeys(cls.Methods) {
+			mf := cls.Methods[mname]
+			si.Methods[mname] = funcInfoFromJSON(mname, mf)
+		}
+		p.Structs[name] = si
 	}
 
 	for name, iface := range raw.Interfaces {
@@ -154,569 +295,444 @@ func convertPackageJSON(raw *tsPackageJSON) *extract.PackageInfo {
 		ii.Doc = iface.Doc
 		ii.File = iface.File
 		ii.Line = iface.Line
-		for fn, ft := range iface.Fields {
-			ii.Methods[fn] = &extract.FuncInfo{
-				Params:  nil,
-				Returns: []string{ft},
+		if iface.File != "" && iface.Line > 0 {
+			ii.Source = fmt.Sprintf("%s:%d", iface.File, iface.Line)
+		}
+		// Property-shape members come through as `fields` in JSON; for an
+		// interface we treat them as zero-arity methods returning the
+		// property's type, since the data model has no per-interface fields.
+		// This mirrors the legacy behavior and keeps the round-trip clean.
+		for _, fname := range sortedStringMapKeys(iface.Fields) {
+			ftype := iface.Fields[fname]
+			ii.Methods[fname] = &extract.FuncInfo{
+				SignatureText: fmt.Sprintf("%s: %s", fname, ftype),
+				File:          iface.File,
+				Line:           iface.Line,
+			}
+			if iface.File != "" && iface.Line > 0 {
+				ii.Methods[fname].Source = fmt.Sprintf("%s:%d", iface.File, iface.Line)
 			}
 		}
-		for mn, mf := range iface.Methods {
-			ii.Methods[mn] = convertFuncJSON(mf)
+		for _, mname := range sortedFuncJSONKeys(iface.Methods) {
+			mf := iface.Methods[mname]
+			ii.Methods[mname] = funcInfoFromJSON(mname, mf)
 		}
-		info.Interfaces[name] = ii
+		p.Interfaces[name] = ii
 	}
 
 	for name, fn := range raw.Functions {
-		info.Functions[name] = convertFuncJSON(fn)
+		p.Functions[name] = funcInfoFromJSON(name, fn)
 	}
 
 	for name, td := range raw.TypeDefs {
-		info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: td.Underlying, Doc: td.Doc, File: td.File, Line: td.Line}
+		ti := &extract.TypeDefInfo{
+			Underlying: td.Underlying,
+			Doc:        td.Doc,
+			File:       td.File,
+			Line:       td.Line,
+		}
+		if td.File != "" && td.Line > 0 {
+			ti.Source = fmt.Sprintf("%s:%d", td.File, td.Line)
+		}
+		p.TypeDefs[name] = ti
 	}
-
-	return info
 }
 
-func convertFuncJSON(f tsFuncJSON) *extract.FuncInfo {
-	params := make([]extract.ParamInfo, len(f.Params))
-	for i, p := range f.Params {
-		params[i] = extract.ParamInfo{Name: p.Name, Type: p.Type}
+// funcInfoFromJSON builds a *FuncInfo whose SignatureText is the canonical
+// TypeScript form: "Name(p1: t1, p2: t2): retType".
+func funcInfoFromJSON(name string, fn tsFuncJSON) *extract.FuncInfo {
+	fi := &extract.FuncInfo{
+		SignatureText: tsFuncSigText(name, fn),
+		Doc:           fn.Doc,
+		File:          fn.File,
+		Line:          fn.Line,
 	}
-	returns := f.Returns
-	if returns == nil {
-		returns = []string{"void"}
+	if fn.File != "" && fn.Line > 0 {
+		fi.Source = fmt.Sprintf("%s:%d", fn.File, fn.Line)
 	}
-	return &extract.FuncInfo{Params: params, Returns: returns, Doc: f.Doc, File: f.File, Line: f.Line}
+	return fi
 }
 
-// --- LDD Metadata ---
-
-type TsLDDMeta struct {
-	Source []string
-	Why    string
-	Lang   string
-}
-
-func ParseTsLDDMeta(content string) TsLDDMeta {
-	meta := TsLDDMeta{Lang: "typescript"}
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "//ldd:source ") {
-			parts := strings.Split(strings.TrimPrefix(line, "//ldd:source "), ",")
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					meta.Source = append(meta.Source, p)
-				}
-			}
-		} else if strings.HasPrefix(line, "//ldd:why ") {
-			w := strings.TrimPrefix(line, "//ldd:why ")
-			w = strings.Trim(w, `"`)
-			meta.Why = w
-		}
-	}
-	return meta
-}
-
-// --- Generation ---
-
-// GenerateTsLDDFile creates a new .ts.lyric file from the TypeScript source
-// files in the given directory.
-func GenerateTsLDDFile(dir string) (outPath string, content string, err error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", "", fmt.Errorf("reading directory: %w", err)
-	}
-
-	merged := extract.NewPackageInfo("")
-	var sourceFiles []string
-
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".ts") {
-			continue
-		}
-		// Skip test files, declaration files, and .ts.lyric files
-		if strings.HasSuffix(name, ".test.ts") || strings.HasSuffix(name, ".spec.ts") ||
-			strings.HasSuffix(name, ".d.ts") || strings.HasSuffix(name, ".ts.lyric") {
-			continue
-		}
-
-		srcPath := filepath.Join(dir, name)
-		info, err := runExtractScript(srcPath)
-		if err != nil {
-			return "", "", fmt.Errorf("extracting %s: %w", name, err)
-		}
-
-		if merged.Name == "" {
-			merged.Name = info.Name
-		}
-		mergeTsInfo(merged, info)
-		sourceFiles = append(sourceFiles, name)
-	}
-
-	if len(sourceFiles) == 0 {
-		return "", "", fmt.Errorf("no .ts source files found in %s", dir)
-	}
-	sort.Strings(sourceFiles)
-
-	// Use directory name as package name
-	pkgName := filepath.Base(dir)
-	merged.Name = pkgName
-
-	outPath = filepath.Join(dir, pkgName+".ts.lyric")
-	content = renderTsLDD(merged, sourceFiles)
-	return outPath, content, nil
-}
-
-func renderTsLDD(info *extract.PackageInfo, sourceFiles []string) string {
-	var b strings.Builder
-
-	b.WriteString(fmt.Sprintf("//ldd:source %s\n", strings.Join(sourceFiles, ", ")))
-	b.WriteString(`//ldd:why ""` + "\n\n")
-
-	// Interfaces
-	for _, name := range sortedInterfaceKeys(info.Interfaces) {
-		iface := info.Interfaces[name]
-		writeTsDoc(&b, iface.Doc)
-		writeTsLocation(&b, iface.File, iface.Line)
-		b.WriteString(fmt.Sprintf("interface %s {\n", name))
-		for _, mn := range sortedFuncKeys(iface.Methods) {
-			mf := iface.Methods[mn]
-			b.WriteString(fmt.Sprintf("  %s;\n", buildTsFuncSig(mn, "", mf)))
-		}
-		b.WriteString("}\n\n")
-	}
-
-	// Classes
-	for _, name := range sortedKeys(info.Structs) {
-		cls := info.Structs[name]
-		writeTsDoc(&b, cls.Doc)
-		writeTsLocation(&b, cls.File, cls.Line)
-		b.WriteString(fmt.Sprintf("class %s {\n", name))
-		for _, f := range extract.SortedFieldsByName(cls.Fields) {
-			b.WriteString(fmt.Sprintf("  %s: %s;\n", f.Name, f.SignatureText))
-		}
-		for _, mn := range sortedFuncKeys(cls.Methods) {
-			mf := cls.Methods[mn]
-			b.WriteString(fmt.Sprintf("  %s;\n", buildTsFuncSig(mn, "", mf)))
-		}
-		b.WriteString("}\n\n")
-	}
-
-	// Type aliases
-	for _, name := range sortedTypeDefKeys(info.TypeDefs) {
-		td := info.TypeDefs[name]
-		writeTsDoc(&b, td.Doc)
-		writeTsLocation(&b, td.File, td.Line)
-		b.WriteString(fmt.Sprintf("type %s = %s;\n", name, td.Underlying))
-	}
-	if len(info.TypeDefs) > 0 {
-		b.WriteString("\n")
-	}
-
-	// Functions
-	for _, name := range sortedFuncKeys(info.Functions) {
-		fn := info.Functions[name]
-		writeTsDoc(&b, fn.Doc)
-		writeTsLocation(&b, fn.File, fn.Line)
-		b.WriteString(fmt.Sprintf("function %s;\n", buildTsFuncSig(name, "", fn)))
-	}
-
-	b.WriteString("\n// --- index ---\n")
-	b.WriteString("// Auto-generated function/method index.\n")
-	b.WriteString("// DO NOT EDIT below this line — regenerated by `lyre update`.\n")
-
-	return b.String()
-}
-
-func buildTsFuncSig(name string, _ string, fi *extract.FuncInfo) string {
-	var parts []string
-	for _, p := range fi.Params {
+// tsFuncSigText returns the canonical FuncInfo.SignatureText for a TS func
+// or method: "Name(p1: t1, p2: t2): retType". No `function` keyword. No
+// trailing semicolon. No receiver clause.
+func tsFuncSigText(name string, fn tsFuncJSON) string {
+	parts := make([]string, 0, len(fn.Params))
+	for _, p := range fn.Params {
 		parts = append(parts, fmt.Sprintf("%s: %s", p.Name, p.Type))
 	}
 	ret := "void"
-	if len(fi.Returns) > 0 && fi.Returns[0] != "" {
-		ret = fi.Returns[0]
+	if len(fn.Returns) > 0 && fn.Returns[0] != "" {
+		ret = fn.Returns[0]
 	}
 	return fmt.Sprintf("%s(%s): %s", name, strings.Join(parts, ", "), ret)
 }
 
-// writeTsDoc emits a doc comment using // prefix (first line only for brevity).
-func writeTsDoc(b *strings.Builder, doc string) {
-	if doc == "" {
-		return
-	}
-	first := strings.SplitN(doc, "\n", 2)[0]
-	b.WriteString("// " + first + "\n")
-}
+// --- GenerateTs / UpdateTs / VerifyTs -------------------------------------
 
-// writeTsLocation emits a file:line reference comment.
-func writeTsLocation(b *strings.Builder, file string, line int) {
-	if file != "" && line > 0 {
-		b.WriteString(fmt.Sprintf("// %s:%d\n", file, line))
-	}
-}
-
-// --- Parsing ---
-
-// ParseTsLDDFile parses a .ts.lyric file and returns the declared API and
-// the metadata.
-func ParseTsLDDFile(lddPath string) (*extract.PackageInfo, *TsLDDMeta, error) {
-	data, err := os.ReadFile(lddPath)
+// GenerateTs scaffolds a fresh <dirname>.ts.lyric file for srcDir. It does
+// NOT write to disk; the caller chooses what to do with the returned content
+// (the lyre CLI writes only if the target doesn't already exist).
+func GenerateTs(srcDir string) (outPath, content string, err error) {
+	p, err := ExtractTs(srcDir)
 	if err != nil {
-		return nil, nil, err
+		return "", "", err
 	}
-	content := string(data)
-	meta := ParseTsLDDMeta(content)
-
-	// Run the extractor on the .ts.lyric file itself (valid TS declarations)
-	info, err := runExtractScript(lddPath)
+	absDir, err := filepath.Abs(srcDir)
 	if err != nil {
-		// Fall back: parse manually from the text
-		info = parseTsLDDManual(content)
+		return "", "", err
 	}
-	return info, &meta, nil
+	outPath = filepath.Join(absDir, p.Name+".ts.lyric")
+	content = udd.Write(p)
+	return outPath, content, nil
 }
 
-// parseTsLDDManual is a simple line-based parser for .ts.lyric files that
-// extracts names of declared symbols. Used as a fallback when the TS compiler
-// cannot parse the stub file.
-func parseTsLDDManual(content string) *extract.PackageInfo {
-	info := extract.NewPackageInfo("")
-	humanPart, _ := splitAtIndexMarkerTs(content)
-
-	for _, line := range strings.Split(humanPart, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "//") || line == "" || line == "{" || line == "}" {
-			continue
-		}
-		// class Foo {
-		if strings.HasPrefix(line, "class ") {
-			name := strings.Fields(line)[1]
-			name = strings.TrimSuffix(name, "{")
-			name = strings.TrimSpace(name)
-			if _, ok := info.Structs[name]; !ok {
-				info.Structs[name] = extract.NewStructInfo()
-			}
-		}
-		// interface Foo {
-		if strings.HasPrefix(line, "interface ") {
-			name := strings.Fields(line)[1]
-			name = strings.TrimSuffix(name, "{")
-			name = strings.TrimSpace(name)
-			if _, ok := info.Interfaces[name]; !ok {
-				info.Interfaces[name] = extract.NewInterfaceInfo()
-			}
-		}
-		// function foo(...): T;
-		if strings.HasPrefix(line, "function ") {
-			rest := strings.TrimPrefix(line, "function ")
-			if idx := strings.Index(rest, "("); idx > 0 {
-				name := rest[:idx]
-				info.Functions[name] = &extract.FuncInfo{}
-			}
-		}
-		// type Foo = ...;
-		if strings.HasPrefix(line, "type ") {
-			rest := strings.TrimPrefix(line, "type ")
-			if idx := strings.Index(rest, "="); idx > 0 {
-				name := strings.TrimSpace(rest[:idx])
-				underlying := strings.TrimSpace(rest[idx+1:])
-				underlying = strings.TrimSuffix(underlying, ";")
-				info.TypeDefs[name] = &extract.TypeDefInfo{Underlying: underlying}
-			}
-		}
+// UpdateTs refreshes lyricPath: re-extracts signatures/positions from TS
+// source, adds new exports, preserves all human prose (ModuleWhy, Docs,
+// Invariants, per-decl Why, per-field Doc). Returns the human-readable list
+// of additions. Source list is refreshed.
+func UpdateTs(lyricPath string) (added []string, err error) {
+	raw, err := os.ReadFile(lyricPath)
+	if err != nil {
+		return nil, err
 	}
-	return info
+	existing, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
+
+	srcDir := filepath.Dir(lyricPath)
+	fresh, err := ExtractTs(srcDir)
+	if err != nil {
+		return nil, err
+	}
+
+	added = mergeFreshIntoExisting(existing, fresh)
+
+	out := udd.Write(existing)
+	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
-// --- Verification ---
+// VerifyTs parses lyricPath as a .ts.lyric v2 file, re-extracts the TS
+// source it lives next to, and reports drift via Findings.
+func VerifyTs(lyricPath string) (*VerifyResult, error) {
+	raw, err := os.ReadFile(lyricPath)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := udd.Parse(string(raw), lyricPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+	}
 
-func VerifyTsLDD(lddPath string) (*VerifyResult, error) {
+	srcDir := filepath.Dir(lyricPath)
+	actual, err := ExtractTs(srcDir)
+	if err != nil {
+		return nil, err
+	}
+
 	result := &VerifyResult{}
-
-	declared, meta, err := ParseTsLDDFile(lddPath)
-	if err != nil {
-		return nil, fmt.Errorf("parsing LDD file: %w", err)
-	}
-
-	if len(meta.Source) == 0 {
-		result.Findings = append(result.Findings, Finding{SevError, fmt.Sprintf("%s: missing //ldd:source directive", lddPath)})
-		return result, nil
-	}
-
-	dir := filepath.Dir(lddPath)
-	actual := extract.NewPackageInfo("")
-	for _, src := range meta.Source {
-		srcPath := filepath.Join(dir, src)
-		info, err := runExtractScript(srcPath)
-		if err != nil {
-			result.Findings = append(result.Findings, Finding{SevError, fmt.Sprintf("%s: %v", src, err)})
-			continue
-		}
-		mergeTsInfo(actual, info)
-	}
-
-	// Check for undocumented symbols
-	for name := range actual.Structs {
-		if _, ok := declared.Structs[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("undocumented class: %s", name)})
-		}
-	}
-	for name := range actual.Interfaces {
-		if _, ok := declared.Interfaces[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("undocumented interface: %s", name)})
-		}
-	}
-	for name := range actual.Functions {
-		if _, ok := declared.Functions[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("undocumented function: %s", name)})
-		}
-	}
-	for name := range actual.TypeDefs {
-		if _, ok := declared.TypeDefs[name]; !ok {
-			if _, ok := declared.Structs[name]; !ok {
-				if _, ok := declared.Interfaces[name]; !ok {
-					result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("undocumented type: %s", name)})
-				}
-			}
-		}
-	}
-
-	// Check for stale symbols
-	for name := range declared.Structs {
-		if _, ok := actual.Structs[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("stale class (removed from source): %s", name)})
-		}
-	}
-	for name := range declared.Interfaces {
-		if _, ok := actual.Interfaces[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("stale interface (removed from source): %s", name)})
-		}
-	}
-	for name := range declared.Functions {
-		if _, ok := actual.Functions[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("stale function (removed from source): %s", name)})
-		}
-	}
-	for name := range declared.TypeDefs {
-		if _, ok := actual.TypeDefs[name]; !ok {
-			result.Findings = append(result.Findings, Finding{SevWarning, fmt.Sprintf("stale type (removed from source): %s", name)})
-		}
-	}
-
+	srcStr := strings.Join(actual.ModuleSource, ", ")
+	compareStructs(declared, actual, lyricPath, srcStr, result)
+	compareInterfaces(declared, actual, lyricPath, srcStr, result)
+	compareFunctions(declared, actual, lyricPath, srcStr, result)
+	compareTypeDefs(declared, actual, lyricPath, srcStr, result)
+	checkCompleteness(declared, actual, lyricPath, srcStr, result)
 	return result, nil
 }
 
-// --- Update ---
+// --- merge ----------------------------------------------------------------
 
-func UpdateTsLDD(lddPath string) (added []string, err error) {
-	_, meta, err := ParseTsLDDFile(lddPath)
-	if err != nil {
-		return nil, err
-	}
+// mergeFreshIntoExisting refreshes signatures/positions on existing decls
+// from `fresh`, adds new exports, and refreshes the module-level source
+// list. All human prose on existing decls is preserved.
+//
+// NOT pruned: decls present in existing but absent from fresh remain in
+// the file (VerifyTs reports them as drift).
+func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
+	var added []string
 
-	if len(meta.Source) == 0 {
-		return nil, fmt.Errorf("no //ldd:source directive found")
-	}
+	existing.ModuleSource = fresh.ModuleSource
 
-	dir := filepath.Dir(lddPath)
-	actual := extract.NewPackageInfo("")
-	for _, src := range meta.Source {
-		srcPath := filepath.Join(dir, src)
-		info, err := runExtractScript(srcPath)
-		if err != nil {
-			return nil, fmt.Errorf("extracting %s: %w", src, err)
+	for _, name := range sortedKeys(fresh.Structs) {
+		fs := fresh.Structs[name]
+		es, ok := existing.Structs[name]
+		if !ok {
+			existing.Structs[name] = fs
+			added = append(added, "class "+name)
+			continue
 		}
-		mergeTsInfo(actual, info)
-	}
-
-	data, err := os.ReadFile(lddPath)
-	if err != nil {
-		return nil, err
-	}
-	content := string(data)
-	humanPart, _ := splitAtIndexMarkerTs(content)
-
-	declared := parseTsLDDManual(content)
-
-	var newDecls strings.Builder
-
-	// Missing interfaces
-	var missingIfaceNames []string
-	for name := range actual.Interfaces {
-		if _, ok := declared.Interfaces[name]; !ok {
-			missingIfaceNames = append(missingIfaceNames, name)
+		es.File, es.Line, es.Source = fs.File, fs.Line, fs.Source
+		preservedDoc := map[string]string{}
+		for _, f := range es.Fields {
+			if f.Doc != "" {
+				preservedDoc[f.Name] = f.Doc
+			}
+		}
+		es.Fields = es.Fields[:0]
+		for _, f := range fs.Fields {
+			ff := f
+			if doc, ok := preservedDoc[f.Name]; ok {
+				ff.Doc = doc
+			}
+			es.Fields = append(es.Fields, ff)
+		}
+		for mn, fm := range fs.Methods {
+			if em, ok := es.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				es.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
+			}
 		}
 	}
-	sort.Strings(missingIfaceNames)
-	for _, name := range missingIfaceNames {
-		iface := actual.Interfaces[name]
-		newDecls.WriteString("\n")
-		writeTsDoc(&newDecls, iface.Doc)
-		writeTsLocation(&newDecls, iface.File, iface.Line)
-		newDecls.WriteString(fmt.Sprintf("interface %s {\n", name))
-		for _, mn := range sortedFuncKeys(iface.Methods) {
-			mf := iface.Methods[mn]
-			newDecls.WriteString(fmt.Sprintf("  %s;\n", buildTsFuncSig(mn, "", mf)))
+
+	for _, name := range sortedKeys(fresh.Interfaces) {
+		fi := fresh.Interfaces[name]
+		ei, ok := existing.Interfaces[name]
+		if !ok {
+			existing.Interfaces[name] = fi
+			added = append(added, "interface "+name)
+			continue
 		}
-		newDecls.WriteString("}\n")
-		added = append(added, "interface "+name)
+		ei.File, ei.Line, ei.Source = fi.File, fi.Line, fi.Source
+		for mn, fm := range fi.Methods {
+			if em, ok := ei.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+			} else {
+				ei.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("interface %s.%s", name, mn))
+			}
+		}
 	}
 
-	// Missing classes
-	var missingClassNames []string
+	for _, name := range sortedKeys(fresh.Functions) {
+		ff := fresh.Functions[name]
+		ef, ok := existing.Functions[name]
+		if !ok {
+			existing.Functions[name] = ff
+			added = append(added, "function "+name)
+			continue
+		}
+		ef.SignatureText = ff.SignatureText
+		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
+	}
+
+	for _, name := range sortedKeys(fresh.TypeDefs) {
+		ft := fresh.TypeDefs[name]
+		et, ok := existing.TypeDefs[name]
+		if !ok {
+			existing.TypeDefs[name] = ft
+			added = append(added, "type "+name)
+			continue
+		}
+		et.Underlying = ft.Underlying
+		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
+	}
+
+	sort.Strings(added)
+	return added
+}
+
+// --- verify comparison helpers --------------------------------------------
+
+func compareStructs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Structs) {
+		ds := declared.Structs[name]
+		as, ok := actual.Structs[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("class %s declared in .lyric but not found in source", name))
+			continue
+		}
+		for _, df := range ds.Fields {
+			actualType, ok := as.FieldSig(df.Name)
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("class %s: field %s not found in source", name, df.Name))
+				continue
+			}
+			if !typesMatch(df.SignatureText, actualType) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("class %s: field %s type mismatch: .lyric=%s, source=%s", name, df.Name, df.SignatureText, actualType))
+			}
+		}
+		var extras []string
+		for _, af := range as.Fields {
+			if !ds.HasField(af.Name) {
+				extras = append(extras, af.Name)
+			}
+		}
+		sort.Strings(extras)
+		for _, extra := range extras {
+			result.add(SevWarning, file, srcStr, fmt.Sprintf("class %s: source has field %s not in .lyric", name, extra))
+		}
+		for mn, dm := range ds.Methods {
+			am, ok := as.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("class %s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("class %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
+			}
+		}
+	}
+}
+
+func compareInterfaces(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Interfaces) {
+		di := declared.Interfaces[name]
+		ai, ok := actual.Interfaces[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("interface %s declared in .lyric but not found in source", name))
+			continue
+		}
+		for mn, dm := range di.Methods {
+			am, ok := ai.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
+			}
+		}
+	}
+}
+
+func compareFunctions(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.Functions) {
+		df := declared.Functions[name]
+		af, ok := actual.Functions[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s declared in .lyric but not found in source", name))
+			continue
+		}
+		if !sigMatch(df.SignatureText, af.SignatureText) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s signature mismatch: .lyric=%q, source=%q", name, df.SignatureText, af.SignatureText))
+		}
+	}
+}
+
+func compareTypeDefs(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	for _, name := range sortedKeys(declared.TypeDefs) {
+		dt := declared.TypeDefs[name]
+		at, ok := actual.TypeDefs[name]
+		if !ok {
+			result.add(SevError, file, srcStr, fmt.Sprintf("type %s declared in .lyric but not found in source", name))
+			continue
+		}
+		if !typesMatch(dt.Underlying, at.Underlying) {
+			result.add(SevError, file, srcStr, fmt.Sprintf("type %s underlying mismatch: .lyric=%s, source=%s", name, dt.Underlying, at.Underlying))
+		}
+	}
+}
+
+func checkCompleteness(declared, actual *extract.PackageInfo, file, srcStr string, result *VerifyResult) {
+	declaredNames := map[string]bool{}
+	for name := range declared.Structs {
+		declaredNames[name] = true
+	}
+	for name := range declared.Interfaces {
+		declaredNames[name] = true
+	}
+	for name := range declared.Functions {
+		declaredNames[name] = true
+	}
+	for name := range declared.TypeDefs {
+		declaredNames[name] = true
+	}
+
+	var missing []string
 	for name := range actual.Structs {
-		if _, ok := declared.Structs[name]; !ok {
-			missingClassNames = append(missingClassNames, name)
+		if !declaredNames[name] {
+			missing = append(missing, "class "+name)
 		}
 	}
-	sort.Strings(missingClassNames)
-	for _, name := range missingClassNames {
-		cls := actual.Structs[name]
-		newDecls.WriteString("\n")
-		writeTsDoc(&newDecls, cls.Doc)
-		writeTsLocation(&newDecls, cls.File, cls.Line)
-		newDecls.WriteString(fmt.Sprintf("class %s {\n", name))
-		for _, f := range extract.SortedFieldsByName(cls.Fields) {
-			newDecls.WriteString(fmt.Sprintf("  %s: %s;\n", f.Name, f.SignatureText))
+	for name := range actual.Interfaces {
+		if !declaredNames[name] {
+			missing = append(missing, "interface "+name)
 		}
-		for _, mn := range sortedFuncKeys(cls.Methods) {
-			mf := cls.Methods[mn]
-			newDecls.WriteString(fmt.Sprintf("  %s;\n", buildTsFuncSig(mn, "", mf)))
-		}
-		newDecls.WriteString("}\n")
-		added = append(added, "class "+name)
 	}
-
-	// Missing type defs
-	var missingTypeNames []string
 	for name := range actual.TypeDefs {
-		if _, ok := declared.TypeDefs[name]; !ok {
-			if _, ok := declared.Structs[name]; !ok {
-				if _, ok := declared.Interfaces[name]; !ok {
-					missingTypeNames = append(missingTypeNames, name)
-				}
-			}
+		if !declaredNames[name] {
+			missing = append(missing, "type "+name)
 		}
 	}
-	sort.Strings(missingTypeNames)
-	for _, name := range missingTypeNames {
-		td := actual.TypeDefs[name]
-		newDecls.WriteString("\n")
-		writeTsDoc(&newDecls, td.Doc)
-		writeTsLocation(&newDecls, td.File, td.Line)
-		newDecls.WriteString(fmt.Sprintf("type %s = %s;\n", name, td.Underlying))
-		added = append(added, "type "+name)
-	}
-
-	// Missing functions
-	var missingFuncNames []string
 	for name := range actual.Functions {
-		if _, ok := declared.Functions[name]; !ok {
-			missingFuncNames = append(missingFuncNames, name)
+		if !declaredNames[name] {
+			missing = append(missing, "function "+name)
 		}
 	}
-	sort.Strings(missingFuncNames)
-	for _, name := range missingFuncNames {
-		fi := actual.Functions[name]
-		newDecls.WriteString("\n")
-		writeTsDoc(&newDecls, fi.Doc)
-		writeTsLocation(&newDecls, fi.File, fi.Line)
-		newDecls.WriteString(fmt.Sprintf("function %s;\n", buildTsFuncSig(name, "", fi)))
-		added = append(added, "func "+name)
+	sort.Strings(missing)
+	for _, kind := range missing {
+		result.add(SevError, file, srcStr, fmt.Sprintf("exported %s not documented in .lyric", kind))
 	}
-
-	// Reconstruct the file
-	resultStr := strings.TrimRight(humanPart, "\n")
-	if newDecls.Len() > 0 {
-		resultStr += "\n" + newDecls.String()
-	}
-	resultStr += "\n// --- index ---\n"
-	resultStr += "// Auto-generated function/method index.\n"
-	resultStr += "// DO NOT EDIT below this line — regenerated by `lyre update`.\n"
-
-	return added, os.WriteFile(lddPath, []byte(resultStr), 0644)
 }
 
-func splitAtIndexMarkerTs(text string) (human string, rest string) {
-	const marker = "\n// --- index ---\n"
-	if idx := strings.Index(text, marker); idx >= 0 {
-		return text[:idx], text[idx:]
-	}
-	return text, ""
+// --- signature normalization ----------------------------------------------
+
+// sigMatch compares two signatures with spec §7 normalization: strip
+// leading/trailing whitespace, collapse runs of ASCII whitespace to a
+// single space, then byte-equal.
+func sigMatch(a, b string) bool {
+	return normalizeSig(a) == normalizeSig(b)
 }
 
-// --- Merge helper ---
-
-func mergeTsInfo(dst, src *extract.PackageInfo) {
-	for k, v := range src.Structs {
-		if existing, ok := dst.Structs[k]; ok {
-			for _, f := range v.Fields {
-				existing.SetField(f.Name, f.SignatureText)
-			}
-			for mk, mv := range v.Methods {
-				existing.Methods[mk] = mv
+func normalizeSig(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	inSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' || c == '\t' {
+			if !inSpace {
+				b.WriteByte(' ')
+				inSpace = true
 			}
 		} else {
-			dst.Structs[k] = v
+			b.WriteByte(c)
+			inSpace = false
 		}
 	}
-	for k, v := range src.Interfaces {
-		dst.Interfaces[k] = v
-	}
-	for k, v := range src.Functions {
-		dst.Functions[k] = v
-	}
-	for k, v := range src.TypeDefs {
-		dst.TypeDefs[k] = v
-	}
+	return b.String()
 }
 
-// --- Sorting helpers ---
-
-func sortedKeys(m map[string]*extract.StructInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+// typesMatch compares two TypeScript type strings with whitespace
+// normalization. TS has no equivalent of Go's `any`↔`interface{}` quirk and
+// no package-prefix complication, so this just delegates to sigMatch.
+func typesMatch(a, b string) bool {
+	return sigMatch(a, b)
 }
 
-func sortedInterfaceKeys(m map[string]*extract.InterfaceInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
+// --- sort helpers ---------------------------------------------------------
 
-func sortedFuncKeys(m map[string]*extract.FuncInfo) []string {
-	keys := make([]string, 0, len(m))
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		out = append(out, k)
 	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedTypeDefKeys(m map[string]*extract.TypeDefInfo) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(out)
+	return out
 }
 
 func sortedStringMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
+	out := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		out = append(out, k)
 	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(out)
+	return out
+}
+
+func sortedFuncJSONKeys(m map[string]tsFuncJSON) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
