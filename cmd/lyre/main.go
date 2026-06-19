@@ -22,7 +22,6 @@ import (
 	"github.com/waywardgeek/lyre/pkg/gen"
 	"github.com/waywardgeek/lyre/pkg/lint"
 	"github.com/waywardgeek/lyre/pkg/udd"
-	"github.com/waywardgeek/lyre/pkg/verifier"
 )
 
 const usage = `Usage: lyre <command> [arguments]
@@ -97,12 +96,6 @@ func main() {
 	}
 }
 
-// isLyLyric returns true if the path is a .ly.lyric file (Lyric-native LDD)
-// as opposed to a plain .lyric file (legacy Lyric declaration syntax).
-func isLyLyric(path string) bool {
-	return strings.HasSuffix(path, ".ly.lyric")
-}
-
 // --- verify ---
 
 func cmdVerify(args []string) error {
@@ -143,34 +136,17 @@ func cmdVerify(args []string) error {
 				}
 			}
 		case "lyric":
-			if isLyLyric(path) {
-				result, err := lyricext.VerifyLy(path)
-				if err != nil {
-					return fmt.Errorf("%s: %w", path, err)
-				}
-				for _, f := range result.Findings {
-					fmt.Println(f)
-					switch f.Severity {
-					case lyricext.SevError:
-						totalErrors++
-					case lyricext.SevWarning:
-						totalWarnings++
-					}
-				}
-			} else {
-				// Fall back to legacy Lyric-syntax verifier
-				result, err := verifier.Verify(path)
-				if err != nil {
-					return fmt.Errorf("%s: %w", path, err)
-				}
-				for _, f := range result.Findings {
-					fmt.Println(f)
-					switch f.Severity {
-					case verifier.Error:
-						totalErrors++
-					case verifier.Warning:
-						totalWarnings++
-					}
+			result, err := lyricext.VerifyLy(path)
+			if err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+			for _, f := range result.Findings {
+				fmt.Println(f)
+				switch f.Severity {
+				case lyricext.SevError:
+					totalErrors++
+				case lyricext.SevWarning:
+					totalWarnings++
 				}
 			}
 		case "typescript":
@@ -203,42 +179,30 @@ func cmdVerify(args []string) error {
 
 func cmdUpdate(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: lyre update [--prune] <file> [...]")
+		return fmt.Errorf("usage: lyre update <file> [...]")
 	}
-	prune := false
 	var files []string
 	for _, a := range args {
-		if a == "--prune" {
-			prune = true
-		} else {
-			files = append(files, a)
-		}
+		files = append(files, a)
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("usage: lyre update [--prune] <file> [...]")
+		return fmt.Errorf("usage: lyre update <file> [...]")
 	}
 	for _, path := range files {
 		lang := extract.DetectLanguage(path)
 		switch lang {
 		case "lyric":
-			if isLyLyric(path) {
-				added, err := lyricext.UpdateLy(path)
-				if err != nil {
-					return fmt.Errorf("%s: %w", path, err)
-				}
-				if len(added) == 0 {
-					fmt.Printf("%s: up to date\n", path)
-				} else {
-					fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
-					for _, name := range added {
-						fmt.Printf("  + %s\n", name)
-					}
-				}
+			added, err := lyricext.UpdateLy(path)
+			if err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+			if len(added) == 0 {
+				fmt.Printf("%s: up to date\n", path)
 			} else {
-				if err := runUpdate(path, prune); err != nil {
-					return fmt.Errorf("%s: %w", path, err)
+				fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
+				for _, name := range added {
+					fmt.Printf("  + %s\n", name)
 				}
-				fmt.Printf("updated %s\n", path)
 			}
 		case "go":
 			added, err := golang.UpdateGo(path)

@@ -1,584 +1,713 @@
-//go:build ignore
-
-//ldd:source ast.go, expr.go
-//ldd:why "AST node types for the Lyric syntax parser: positions, spans, declarations, statements, expressions, and type expressions. The two source files divide declarations/statements (ast.go) from expressions (expr.go)."
-
-package ast
-
-type Pos struct {
-	File string
-	Line int
-	Column int
-}
-
-type Span struct {
-	Start Pos
-	End Pos
-}
-
-type TypeExpr struct {
-	Kind TypeExprKind
-	Data any
-	Span Span
-}
-
-type NamedType struct {
-	Name string
-	Args []TypeExpr
-}
-
-type OptionalType struct {
-	Inner TypeExpr
-}
-
-type UnionType struct {
-	Variants []TypeExpr
-}
-
-type SequenceType struct {
-	Elem TypeExpr
-}
-
-type MapType struct {
-	Key TypeExpr
-	Value TypeExpr
-}
-
-type TupleField struct {
-	Name string
-	Type TypeExpr
-}
-
-type TupleType struct {
-	Fields []TupleField
-}
-
-type FuncType struct {
-	Params []TypeExpr
-	Return TypeExpr
-}
-
-type RefType struct {
-	Inner TypeExpr
-}
-
-type ChannelType struct {
-	Elem TypeExpr
-}
-
-type GeneratorType struct {
-	Elem TypeExpr
-}
-
-type TypeParam struct {
-	Name string
-	Constraint string
-	Span Span
-}
-
-type Param struct {
-	Name string
-	Type TypeExpr
-	IsMut bool
-	IsSelf bool
-	Span Span
-}
-
-type WhereClause struct {
-	Variable string
-	Constraint string
-	TypeArgs []TypeExpr
-	Span Span
-}
-
-type Annotations struct {
-	Why string
-	Concurrent *bool
-	RequiresLock []string
-	ExcludesLock []string
-	Raises []string
-	Requires []string
-	Ensures []string
-	Spawns bool
-	Pure bool
-}
-
-type FuncDecl struct {
-	Name string
-	IsPublic bool
-	ReceiverType string
-	TypeParams []TypeParam
-	Params []Param
-	ReturnType *TypeExpr
-	Where []WhereClause
-	Annotations Annotations
-	Body *Block
-	Span Span
-}
-
-type Field struct {
-	Name string
-	IsPublic bool
-	Type TypeExpr
-	Default *Expr
-	GuardedBy string
-	Why string
-	Span Span
-}
-
-type ClassDecl struct {
-	Name string
-	IsPublic bool
-	TypeParams []TypeParam
-	Where []WhereClause
-	Implements []string
-	Fields []Field
-	Methods []FuncDecl
-	Why string
-	Source []string
-	Span Span
-}
-
-type StructDecl struct {
-	Name string
-	IsPublic bool
-	TypeParams []TypeParam
-	Fields []Field
-	Why string
-	Span Span
-}
-
-type EnumVariant struct {
-	Name string
-	Fields []TupleField
-	Span Span
-}
-
-type EnumDecl struct {
-	Name string
-	IsPublic bool
-	TypeParams []TypeParam
-	Variants []EnumVariant
-	Why string
-	Span Span
-}
-
-type InterfaceFieldDecl struct {
-	TypeParam string
-	Name string
-	Type TypeExpr
-	Span Span
-}
-
-type InterfaceDecl struct {
-	Name string
-	IsPublic bool
-	TypeParams []TypeParam
-	Implements []string
-	Embeds []InterfaceEmbed
-	Methods []FuncDecl
-	Fields []InterfaceFieldDecl
-	Destructors []DestructorBlock
-	Why string
-	Span Span
-}
-
-type InterfaceEmbed struct {
-	Name string
-	TypeArgs []TypeExpr
-	Span Span
-}
-
-type DestructorBlock struct {
-	TypeParam string
-	Body Block
-	Span Span
-}
-
-type ImplMapping struct {
-	TypeParam string
-	MethodName string
-	Kind ImplMappingKind
-	TargetClass string
-	TargetMember string
-	InlineFunc *FuncDecl
-	Span Span
-}
-
-type ImplBlock struct {
-	InterfaceName string
-	ForType string
-	TypeArgs []TypeExpr
-	Label string
-	Mappings []ImplMapping
-	Span Span
-}
-
-type RelationSide struct {
-	TypeName string
-	TypeArgs []string
-	Label string
-}
-
-type RelationDecl struct {
-	Hint string
-	Parent RelationSide
-	Kind RelationKind
-	Child RelationSide
-	IsMany bool
-	Span Span
-}
-
-type DocBlock struct {
-	Section string
-	Content string
-	Span Span
-}
-
-type InvariantDecl struct {
-	Claim string
-	VerifiedAt string
-	Span Span
-}
-
-type ImportDecl struct {
-	Alias string
-	Path string
-	Span Span
-}
-
-type TypeAliasDecl struct {
-	Name string
-	IsPublic bool
-	Type TypeExpr
-	Span Span
-}
-
-type LyricBlock struct {
-	Name string
-	Why string
-	Imports []ImportDecl
-	Docs []DocBlock
-	Invariants []InvariantDecl
-	Structs []StructDecl
-	Enums []EnumDecl
-	Interfaces []InterfaceDecl
-	Classes []ClassDecl
-	Functions []FuncDecl
-	Relations []RelationDecl
-	ImplBlocks []ImplBlock
-	TypeAliases []TypeAliasDecl
-	Constants []ConstDecl
-	Source []string
-	Fake string
-	Span Span
-}
-
-type ConstDecl struct {
-	Name string
-	Type *TypeExpr
-	Value Expr
-	IsPublic bool
-	IsMut bool
-	Span Span
-}
-
-type Comment struct {
-	Text string
-	Pos Pos
-}
-
-type File struct {
-	Filename string
-	Blocks []LyricBlock
-	Comments []Comment
-	Span Span
-}
-
-func (f *File) DocComment(line int) []Comment
-
-type Expr struct {
-	Kind ExprKind
-	Data any
-	Span Span
-	ResolvedType any
-}
-
-type IdentExpr struct {
-	Name string
-}
-
-type IntLitExpr struct {
-	Value string
-	TypeHint string
-}
-
-type FloatLitExpr struct {
-	Value string
-}
-
-type StringLitExpr struct {
-	Value string
-}
-
-type StringInterpExpr struct {
-	Parts []Expr
-}
-
-type BoolLitExpr struct {
-	Value bool
-}
-
-type CallExpr struct {
-	Func Expr
-	TypeArgs []TypeExpr
-	InferredTypeArgs []any
-	Args []Expr
-	MutArgs []bool
-}
-
-type MethodCallExpr struct {
-	Receiver Expr
-	Method string
-	TypeArgs []TypeExpr
-	Args []Expr
-	MutArgs []bool
-}
-
-type FieldAccessExpr struct {
-	Receiver Expr
-	Field string
-}
-
-type IndexExpr struct {
-	Receiver Expr
-	Index Expr
-}
-
-type SliceExpr struct {
-	Receiver Expr
-	Low *Expr
-	High *Expr
-}
-
-type UnaryExpr struct {
-	Op UnaryOp
-	Operand Expr
-}
-
-type BinaryExpr struct {
-	Left Expr
-	Op BinaryOp
-	Right Expr
-}
-
-type TupleLitExpr struct {
-	Elems []Expr
-}
-
-type ListLitExpr struct {
-	Elems []Expr
-}
-
-type MapEntry struct {
-	Key Expr
-	Value Expr
-}
-
-type MapLitExpr struct {
-	Entries []MapEntry
-}
-
-type StructLitField struct {
-	Name string
-	Value Expr
-}
-
-type StructLitExpr struct {
-	TypeName string
-	TypeArgs []TypeExpr
-	Fields []StructLitField
-}
-
-type LambdaExpr struct {
-	Params []Param
-	ReturnType *TypeExpr
-	Body *Block
-}
-
-type CastExpr struct {
-	TargetType TypeExpr
-	Operand Expr
-}
-
-type UnwrapExpr struct {
-	Operand Expr
-}
-
-type TryExpr struct {
-	Operand Expr
-}
-
-type IsExpr struct {
-	Operand Expr
-	Variant string
-}
-
-type IfElseExpr struct {
-	Cond Expr
-	Then Block
-	Else Block
-	ElseIfs []ElseIfBranch
-}
-
-type ElseIfBranch struct {
-	Cond Expr
-	Body Block
-}
-
-type Stmt struct {
-	Kind StmtKind
-	Data any
-	Span Span
-}
-
-type Block struct {
-	Stmts []Stmt
-	Span Span
-}
-
-type VarDeclStmt struct {
-	Name string
-	Names []string
-	Type *TypeExpr
-	IsMut bool
-	Value *Expr
-	Pattern *Pattern
-	ElseBlock *Block
-}
-
-type AssignStmt struct {
-	Target Expr
-	Value Expr
-}
-
-type ReturnStmt struct {
-	Value *Expr
-}
-
-type ExprStmt struct {
-	Expr Expr
-}
-
-type IfStmt struct {
-	Condition Expr
-	Then Block
-	ElseIfs []ElseIf
-	Else *Block
-	LetPattern *Pattern
-	LetValue *Expr
-}
-
-type ElseIf struct {
-	Condition Expr
-	Body Block
-	Span Span
-}
-
-type ForStmt struct {
-	Var string
-	IndexVar string
-	Collection Expr
-	Body Block
-}
-
-type WhileStmt struct {
-	Condition Expr
-	Body Block
-}
-
-type MatchStmt struct {
-	Value Expr
-	Arms []MatchArm
-}
-
-type MatchArm struct {
-	Pattern Pattern
-	Patterns []Pattern
-	Guard *Expr
-	Body Block
-	Span Span
-}
-
-type SpawnStmt struct {
-	Body Block
-}
-
-type YieldStmt struct {
-	Value *Expr
-}
-
-type SelectStmt struct {
-	Cases []SelectCase
-}
-
-type SelectCase struct {
-	IsDefault bool
-	BindVar string
-	Expr *Expr
-	Body Block
-	Span Span
-}
-
-type LockStmt struct {
-	Mutex Expr
-	Body Block
-}
-
-type Pattern struct {
-	Kind PatternKind
-	Data any
-	Span Span
-	ResolvedType any
-}
-
-type IdentPattern struct {
-	Name string
-}
-
-type LiteralPattern struct {
-	Expr Expr
-}
-
-type VariantPattern struct {
-	Name string
-	Bindings []Pattern
-}
-
-type TuplePattern struct {
-	Elems []Pattern
-}
-
-type CascadeStmt struct {
-	Body Block
-}
-
-type TypeExprKind int
-
-type ImplMappingKind int
-
-type RelationKind int
-
-type ExprKind int
-
-type UnaryOp int
-
-type BinaryOp int
-
-type StmtKind int
-
-type PatternKind int
-
-// --- index ---
-// Auto-generated function/method index.
-// DO NOT EDIT below this line — regenerated by `lyre update`.
+module ast
+  source: ["ast.go","expr.go"]
+  why: "AST node types for the Lyric syntax parser: positions, spans, declarations, statements, expressions, and type expressions. The two source files divide declarations/statements (ast.go) from expressions (expr.go)."
+
+  doc "Architecture":
+    """
+    TODO: explain the module's high-level structure.
+    """
+
+  struct Annotations
+    source: ast.go:142
+    why: "TODO: explain Annotations."
+    field Why: string
+    field Concurrent: *bool
+    field RequiresLock: []string
+    field ExcludesLock: []string
+    field Raises: []string
+    field Requires: []string
+    field Ensures: []string
+    field Spawns: bool
+    field Pure: bool
+
+  struct AssignStmt
+    source: expr.go:294
+    why: "TODO: explain AssignStmt."
+    field Target: Expr
+    field Value: Expr
+
+  struct BinaryExpr
+    source: expr.go:156
+    why: "TODO: explain BinaryExpr."
+    field Left: Expr
+    field Op: BinaryOp
+    field Right: Expr
+
+  typedef BinaryOp: int
+    source: expr.go:133
+    why: "TODO: explain BinaryOp."
+
+  struct Block
+    source: expr.go:279
+    why: "TODO: explain Block."
+    field Stmts: []Stmt
+    field Span: Span
+
+  struct BoolLitExpr
+    source: expr.go:85
+    why: "TODO: explain BoolLitExpr."
+    field Value: bool
+
+  struct CallExpr
+    source: expr.go:89
+    why: "TODO: explain CallExpr."
+    field Func: Expr
+    field TypeArgs: []TypeExpr
+    field InferredTypeArgs: []any
+    field Args: []Expr
+    field MutArgs: []bool
+
+  struct CascadeStmt
+    source: expr.go:419
+    why: "TODO: explain CascadeStmt."
+    field Body: Block
+
+  struct CastExpr
+    source: expr.go:197
+    why: "TODO: explain CastExpr."
+    field TargetType: TypeExpr
+    field Operand: Expr
+
+  struct ChannelType
+    source: ast.go:106
+    why: "TODO: explain ChannelType."
+    field Elem: TypeExpr
+
+  struct ClassDecl
+    source: ast.go:181
+    why: "TODO: explain ClassDecl."
+    field Name: string
+    field IsPublic: bool
+    field TypeParams: []TypeParam
+    field Where: []WhereClause
+    field Implements: []string
+    field Fields: []Field
+    field Methods: []FuncDecl
+    field Why: string
+    field Source: []string
+    field Span: Span
+
+  struct Comment
+    source: ast.go:378
+    why: "TODO: explain Comment."
+    field Text: string
+    field Pos: Pos
+
+  struct ConstDecl
+    source: ast.go:368
+    why: "TODO: explain ConstDecl."
+    field Name: string
+    field Type: *TypeExpr
+    field Value: Expr
+    field IsPublic: bool
+    field IsMut: bool
+    field Span: Span
+
+  struct DestructorBlock
+    source: ast.go:254
+    why: "TODO: explain DestructorBlock."
+    field TypeParam: string
+    field Body: Block
+    field Span: Span
+
+  struct DocBlock
+    source: ast.go:318
+    why: "TODO: explain DocBlock."
+    field Section: string
+    field Content: string
+    field Span: Span
+
+  struct ElseIf
+    source: expr.go:316
+    why: "TODO: explain ElseIf."
+    field Condition: Expr
+    field Body: Block
+    field Span: Span
+
+  struct ElseIfBranch
+    source: expr.go:229
+    why: "TODO: explain ElseIfBranch."
+    field Cond: Expr
+    field Body: Block
+
+  struct EnumDecl
+    source: ast.go:212
+    why: "TODO: explain EnumDecl."
+    field Name: string
+    field IsPublic: bool
+    field TypeParams: []TypeParam
+    field Variants: []EnumVariant
+    field Why: string
+    field Span: Span
+
+  struct EnumVariant
+    source: ast.go:205
+    why: "TODO: explain EnumVariant."
+    field Name: string
+    field Fields: []TupleField
+    field Span: Span
+
+  struct Expr
+    source: expr.go:54
+    why: "TODO: explain Expr."
+    field Kind: ExprKind
+    field Data: any
+    field Span: Span
+    field ResolvedType: any
+
+  struct ExprKind
+    why: "TODO: explain ExprKind."
+    method String() string
+      source: expr.go:46
+      why: "TODO: explain ExprKind.String."
+
+  typedef ExprKind: int
+    source: expr.go:8
+    why: "TODO: explain ExprKind."
+
+  struct ExprStmt
+    source: expr.go:303
+    why: "TODO: explain ExprStmt."
+    field Expr: Expr
+
+  struct Field
+    source: ast.go:170
+    why: "TODO: explain Field."
+    field Name: string
+    field IsPublic: bool
+    field Type: TypeExpr
+    field Default: *Expr
+    field GuardedBy: string
+    field Why: string
+    field Span: Span
+
+  struct FieldAccessExpr
+    source: expr.go:105
+    why: "TODO: explain FieldAccessExpr."
+    field Receiver: Expr
+    field Field: string
+
+  struct File
+    source: ast.go:384
+    why: "TODO: explain File."
+    field Filename: string
+    field Blocks: []LyricBlock
+    field Comments: []Comment
+    field Span: Span
+    method DocComment(line int) []Comment
+      source: ast.go:393
+      why: "TODO: explain File.DocComment."
+
+  struct FloatLitExpr
+    source: expr.go:70
+    why: "TODO: explain FloatLitExpr."
+    field Value: string
+
+  struct ForStmt
+    source: expr.go:322
+    why: "TODO: explain ForStmt."
+    field Var: string
+    field IndexVar: string
+    field Collection: Expr
+    field Body: Block
+
+  struct FuncDecl
+    source: ast.go:155
+    why: "TODO: explain FuncDecl."
+    field Name: string
+    field IsPublic: bool
+    field ReceiverType: string
+    field TypeParams: []TypeParam
+    field Params: []Param
+    field ReturnType: *TypeExpr
+    field Where: []WhereClause
+    field Annotations: Annotations
+    field Body: *Block
+    field Span: Span
+
+  struct FuncType
+    source: ast.go:95
+    why: "TODO: explain FuncType."
+    field Params: []TypeExpr
+    field Return: TypeExpr
+
+  struct GeneratorType
+    source: ast.go:111
+    why: "TODO: explain GeneratorType."
+    field Elem: TypeExpr
+
+  struct IdentExpr
+    source: expr.go:61
+    why: "TODO: explain IdentExpr."
+    field Name: string
+
+  struct IdentPattern
+    source: expr.go:402
+    why: "TODO: explain IdentPattern."
+    field Name: string
+
+  struct IfElseExpr
+    source: expr.go:222
+    why: "TODO: explain IfElseExpr."
+    field Cond: Expr
+    field Then: Block
+    field Else: Block
+    field ElseIfs: []ElseIfBranch
+
+  struct IfStmt
+    source: expr.go:307
+    why: "TODO: explain IfStmt."
+    field Condition: Expr
+    field Then: Block
+    field ElseIfs: []ElseIf
+    field Else: *Block
+    field LetPattern: *Pattern
+    field LetValue: *Expr
+
+  struct ImplBlock
+    source: ast.go:283
+    why: "TODO: explain ImplBlock."
+    field InterfaceName: string
+    field ForType: string
+    field TypeArgs: []TypeExpr
+    field Label: string
+    field Mappings: []ImplMapping
+    field Span: Span
+
+  struct ImplMapping
+    source: ast.go:270
+    why: "TODO: explain ImplMapping."
+    field TypeParam: string
+    field MethodName: string
+    field Kind: ImplMappingKind
+    field TargetClass: string
+    field TargetMember: string
+    field InlineFunc: *FuncDecl
+    field Span: Span
+
+  typedef ImplMappingKind: int
+    source: ast.go:261
+    why: "TODO: explain ImplMappingKind."
+
+  struct ImportDecl
+    source: ast.go:332
+    why: "TODO: explain ImportDecl."
+    field Alias: string
+    field Path: string
+    field Span: Span
+
+  struct IndexExpr
+    source: expr.go:110
+    why: "TODO: explain IndexExpr."
+    field Receiver: Expr
+    field Index: Expr
+
+  struct IntLitExpr
+    source: expr.go:65
+    why: "TODO: explain IntLitExpr."
+    field Value: string
+    field TypeHint: string
+
+  struct InterfaceDecl
+    source: ast.go:232
+    why: "TODO: explain InterfaceDecl."
+    field Name: string
+    field IsPublic: bool
+    field TypeParams: []TypeParam
+    field Implements: []string
+    field Embeds: []InterfaceEmbed
+    field Methods: []FuncDecl
+    field Fields: []InterfaceFieldDecl
+    field Destructors: []DestructorBlock
+    field Why: string
+    field Span: Span
+
+  struct InterfaceEmbed
+    source: ast.go:246
+    why: "TODO: explain InterfaceEmbed."
+    field Name: string
+    field TypeArgs: []TypeExpr
+    field Span: Span
+
+  struct InterfaceFieldDecl
+    source: ast.go:224
+    why: "TODO: explain InterfaceFieldDecl."
+    field TypeParam: string
+    field Name: string
+    field Type: TypeExpr
+    field Span: Span
+
+  struct InvariantDecl
+    source: ast.go:325
+    why: "TODO: explain InvariantDecl."
+    field Claim: string
+    field VerifiedAt: string
+    field Span: Span
+
+  struct IsExpr
+    source: expr.go:215
+    why: "TODO: explain IsExpr."
+    field Operand: Expr
+    field Variant: string
+
+  struct LambdaExpr
+    source: expr.go:190
+    why: "TODO: explain LambdaExpr."
+    field Params: []Param
+    field ReturnType: *TypeExpr
+    field Body: *Block
+
+  struct ListLitExpr
+    source: expr.go:166
+    why: "TODO: explain ListLitExpr."
+    field Elems: []Expr
+
+  struct LiteralPattern
+    source: expr.go:406
+    why: "TODO: explain LiteralPattern."
+    field Expr: Expr
+
+  struct LockStmt
+    source: expr.go:369
+    why: "TODO: explain LockStmt."
+    field Mutex: Expr
+    field Body: Block
+
+  struct LyricBlock
+    source: ast.go:347
+    why: "TODO: explain LyricBlock."
+    field Name: string
+    field Why: string
+    field Imports: []ImportDecl
+    field Docs: []DocBlock
+    field Invariants: []InvariantDecl
+    field Structs: []StructDecl
+    field Enums: []EnumDecl
+    field Interfaces: []InterfaceDecl
+    field Classes: []ClassDecl
+    field Functions: []FuncDecl
+    field Relations: []RelationDecl
+    field ImplBlocks: []ImplBlock
+    field TypeAliases: []TypeAliasDecl
+    field Constants: []ConstDecl
+    field Source: []string
+    field Fake: string
+    field Span: Span
+
+  struct MapEntry
+    source: expr.go:170
+    why: "TODO: explain MapEntry."
+    field Key: Expr
+    field Value: Expr
+
+  struct MapLitExpr
+    source: expr.go:175
+    why: "TODO: explain MapLitExpr."
+    field Entries: []MapEntry
+
+  struct MapType
+    source: ast.go:78
+    why: "TODO: explain MapType."
+    field Key: TypeExpr
+    field Value: TypeExpr
+
+  struct MatchArm
+    source: expr.go:339
+    why: "TODO: explain MatchArm."
+    field Pattern: Pattern
+    field Patterns: []Pattern
+    field Guard: *Expr
+    field Body: Block
+    field Span: Span
+
+  struct MatchStmt
+    source: expr.go:334
+    why: "TODO: explain MatchStmt."
+    field Value: Expr
+    field Arms: []MatchArm
+
+  struct MethodCallExpr
+    source: expr.go:97
+    why: "TODO: explain MethodCallExpr."
+    field Receiver: Expr
+    field Method: string
+    field TypeArgs: []TypeExpr
+    field Args: []Expr
+    field MutArgs: []bool
+
+  struct NamedType
+    source: ast.go:57
+    why: "TODO: explain NamedType."
+    field Name: string
+    field Args: []TypeExpr
+
+  struct OptionalType
+    source: ast.go:63
+    why: "TODO: explain OptionalType."
+    field Inner: TypeExpr
+
+  struct Param
+    source: ast.go:123
+    why: "TODO: explain Param."
+    field Name: string
+    field Type: TypeExpr
+    field IsMut: bool
+    field IsSelf: bool
+    field Span: Span
+
+  struct Pattern
+    source: expr.go:395
+    why: "TODO: explain Pattern."
+    field Kind: PatternKind
+    field Data: any
+    field Span: Span
+    field ResolvedType: any
+
+  struct PatternKind
+    why: "TODO: explain PatternKind."
+    method String() string
+      source: expr.go:388
+      why: "TODO: explain PatternKind.String."
+
+  typedef PatternKind: int
+    source: expr.go:376
+    why: "TODO: explain PatternKind."
+
+  struct Pos
+    source: ast.go:8
+    why: "TODO: explain Pos."
+    field File: string
+    field Line: int
+    field Column: int
+
+  struct RefType
+    source: ast.go:101
+    why: "TODO: explain RefType."
+    field Inner: TypeExpr
+
+  struct RelationDecl
+    source: ast.go:308
+    why: "TODO: explain RelationDecl."
+    field Hint: string
+    field Parent: RelationSide
+    field Kind: RelationKind
+    field Child: RelationSide
+    field IsMany: bool
+    field Span: Span
+
+  typedef RelationKind: int
+    source: ast.go:293
+    why: "TODO: explain RelationKind."
+
+  struct RelationSide
+    source: ast.go:301
+    why: "TODO: explain RelationSide."
+    field TypeName: string
+    field TypeArgs: []string
+    field Label: string
+
+  struct ReturnStmt
+    source: expr.go:299
+    why: "TODO: explain ReturnStmt."
+    field Value: *Expr
+
+  struct SelectCase
+    source: expr.go:359
+    why: "TODO: explain SelectCase."
+    field IsDefault: bool
+    field BindVar: string
+    field Expr: *Expr
+    field Body: Block
+    field Span: Span
+
+  struct SelectStmt
+    source: expr.go:355
+    why: "TODO: explain SelectStmt."
+    field Cases: []SelectCase
+
+  struct SequenceType
+    source: ast.go:73
+    why: "TODO: explain SequenceType."
+    field Elem: TypeExpr
+
+  struct SliceExpr
+    source: expr.go:115
+    why: "TODO: explain SliceExpr."
+    field Receiver: Expr
+    field Low: *Expr
+    field High: *Expr
+
+  struct Span
+    source: ast.go:15
+    why: "TODO: explain Span."
+    field Start: Pos
+    field End: Pos
+
+  struct SpawnStmt
+    source: expr.go:347
+    why: "TODO: explain SpawnStmt."
+    field Body: Block
+
+  struct Stmt
+    source: expr.go:272
+    why: "TODO: explain Stmt."
+    field Kind: StmtKind
+    field Data: any
+    field Span: Span
+
+  struct StmtKind
+    why: "TODO: explain StmtKind."
+    method String() string
+      source: expr.go:264
+      why: "TODO: explain StmtKind.String."
+
+  typedef StmtKind: int
+    source: expr.go:237
+    why: "TODO: explain StmtKind."
+
+  struct StringInterpExpr
+    source: expr.go:81
+    why: "TODO: explain StringInterpExpr."
+    field Parts: []Expr
+
+  struct StringLitExpr
+    source: expr.go:74
+    why: "TODO: explain StringLitExpr."
+    field Value: string
+
+  struct StructDecl
+    source: ast.go:195
+    why: "TODO: explain StructDecl."
+    field Name: string
+    field IsPublic: bool
+    field TypeParams: []TypeParam
+    field Fields: []Field
+    field Why: string
+    field Span: Span
+
+  struct StructLitExpr
+    source: expr.go:184
+    why: "TODO: explain StructLitExpr."
+    field TypeName: string
+    field TypeArgs: []TypeExpr
+    field Fields: []StructLitField
+
+  struct StructLitField
+    source: expr.go:179
+    why: "TODO: explain StructLitField."
+    field Name: string
+    field Value: Expr
+
+  struct TryExpr
+    source: expr.go:209
+    why: "TODO: explain TryExpr."
+    field Operand: Expr
+
+  struct TupleField
+    source: ast.go:84
+    why: "TODO: explain TupleField."
+    field Name: string
+    field Type: TypeExpr
+
+  struct TupleLitExpr
+    source: expr.go:162
+    why: "TODO: explain TupleLitExpr."
+    field Elems: []Expr
+
+  struct TuplePattern
+    source: expr.go:415
+    why: "TODO: explain TuplePattern."
+    field Elems: []Pattern
+
+  struct TupleType
+    source: ast.go:90
+    why: "TODO: explain TupleType."
+    field Fields: []TupleField
+
+  struct TypeAliasDecl
+    source: ast.go:339
+    why: "TODO: explain TypeAliasDecl."
+    field Name: string
+    field IsPublic: bool
+    field Type: TypeExpr
+    field Span: Span
+
+  struct TypeExpr
+    source: ast.go:21
+    why: "TODO: explain TypeExpr."
+    field Kind: TypeExprKind
+    field Data: any
+    field Span: Span
+
+  struct TypeExprKind
+    why: "TODO: explain TypeExprKind."
+    method String() string
+      source: ast.go:49
+      why: "TODO: explain TypeExprKind.String."
+
+  typedef TypeExprKind: int
+    source: ast.go:27
+    why: "TODO: explain TypeExprKind."
+
+  struct TypeParam
+    source: ast.go:116
+    why: "TODO: explain TypeParam."
+    field Name: string
+    field Constraint: string
+    field Span: Span
+
+  struct UnaryExpr
+    source: expr.go:128
+    why: "TODO: explain UnaryExpr."
+    field Op: UnaryOp
+    field Operand: Expr
+
+  typedef UnaryOp: int
+    source: expr.go:121
+    why: "TODO: explain UnaryOp."
+
+  struct UnionType
+    source: ast.go:68
+    why: "TODO: explain UnionType."
+    field Variants: []TypeExpr
+
+  struct UnwrapExpr
+    source: expr.go:203
+    why: "TODO: explain UnwrapExpr."
+    field Operand: Expr
+
+  struct VarDeclStmt
+    source: expr.go:284
+    why: "TODO: explain VarDeclStmt."
+    field Name: string
+    field Names: []string
+    field Type: *TypeExpr
+    field IsMut: bool
+    field Value: *Expr
+    field Pattern: *Pattern
+    field ElseBlock: *Block
+
+  struct VariantPattern
+    source: expr.go:410
+    why: "TODO: explain VariantPattern."
+    field Name: string
+    field Bindings: []Pattern
+
+  struct WhereClause
+    source: ast.go:134
+    why: "TODO: explain WhereClause."
+    field Variable: string
+    field Constraint: string
+    field TypeArgs: []TypeExpr
+    field Span: Span
+
+  struct WhileStmt
+    source: expr.go:329
+    why: "TODO: explain WhileStmt."
+    field Condition: Expr
+    field Body: Block
+
+  struct YieldStmt
+    source: expr.go:351
+    why: "TODO: explain YieldStmt."
+    field Value: *Expr

@@ -1,92 +1,135 @@
-//go:build ignore
+module extract
+  source: ["extract.go"]
+  why: "TODO: one-line purpose of the extract module."
 
-//ldd:source extract.go
-//ldd:why ""
+  doc "Architecture":
+    """
+    TODO: explain the module's high-level structure.
+    """
 
-package extract
+  struct PackageInfo
+    source: extract.go:15
+    why: "TODO: explain PackageInfo."
+    field Name: string
+    field Structs: map[string]*StructInfo
+    field Interfaces: map[string]*InterfaceInfo
+    field Functions: map[string]*FuncInfo
+    field TypeDefs: map[string]*TypeDefInfo
+    field ModuleWhy: string
+    field ModuleSource: []string
+    field Docs: []DocBlock
+    field Invariants: []Invariant
 
-// PackageInfo is the language-agnostic representation of a package's exported API.
-// extract.go:7
-type PackageInfo struct {
-	Name string
-	Structs map[string]*StructInfo
-	Interfaces map[string]*InterfaceInfo
-	Functions map[string]*FuncInfo
-	TypeDefs map[string]*TypeDefInfo
-}
+  struct DocBlock
+    source: extract.go:30
+    why: "TODO: explain DocBlock."
+    field Title: string
+    field Content: string
 
-// StructInfo describes a struct/class with fields and methods.
-// extract.go:16
-type StructInfo struct {
-	Fields map[string]string
-	Methods map[string]*FuncInfo
-	Doc string
-	File string
-	Line int
-}
+  struct Invariant
+    source: extract.go:36
+    why: "TODO: explain Invariant."
+    field Title: string
+    field Content: string
+    field Procedural: bool
+    field VerifiedBy: []string
 
-// InterfaceInfo describes an interface with methods.
-// extract.go:25
-type InterfaceInfo struct {
-	Methods map[string]*FuncInfo
-	Doc string
-	File string
-	Line int
-}
+  struct StructInfo
+    source: extract.go:44
+    why: "TODO: explain StructInfo."
+    field Fields: []FieldInfo
+    field Methods: map[string]*FuncInfo
+    field Doc: string
+    field File: string
+    field Line: int
+    field IsClass: bool
+    field Why: string
+    field Source: string
+    method FieldSig(name string) (string, bool)
+      source: extract.go:135
+      why: "TODO: explain StructInfo.FieldSig."
+    method HasField(name string) bool
+      source: extract.go:145
+      why: "TODO: explain StructInfo.HasField."
+    method SetField(name, sig string)
+      source: extract.go:153
+      why: "TODO: explain StructInfo.SetField."
+    method SetFieldDoc(name, doc string)
+      source: extract.go:165
+      why: "TODO: explain StructInfo.SetFieldDoc."
+    method FieldNames() []string
+      source: extract.go:176
+      why: "TODO: explain StructInfo.FieldNames."
 
-// FuncInfo describes a function or method signature.
-// extract.go:33
-type FuncInfo struct {
-	Params []ParamInfo
-	Returns []string
-	Doc string
-	File string
-	Line int
-}
+  struct FieldInfo
+    source: extract.go:62
+    why: "TODO: explain FieldInfo."
+    field Name: string
+    field SignatureText: string
+    field Doc: string
 
-// ParamInfo describes a function parameter.
-// extract.go:42
-type ParamInfo struct {
-	Name string
-	Type string
-	IsMut bool
-}
+  struct InterfaceInfo
+    source: extract.go:69
+    why: "TODO: explain InterfaceInfo."
+    field Methods: map[string]*FuncInfo
+    field Doc: string
+    field File: string
+    field Line: int
+    field Why: string
+    field Source: string
 
-// TypeDefInfo describes a type alias or newtype.
-// extract.go:49
-type TypeDefInfo struct {
-	Underlying string
-	Doc string
-	File string
-	Line int
-}
+  struct FuncInfo
+    source: extract.go:89
+    why: "TODO: explain FuncInfo."
+    field SignatureText: string
+    field Params: []ParamInfo
+    field Returns: []string
+    field Doc: string
+    field File: string
+    field Line: int
+    field Why: string
+    field Source: string
 
-// LDDMeta holds the LDD-specific metadata parsed from structured comments.
-// extract.go:57
-type LDDMeta struct {
-	Source []string
-	Why string
-	Lang string
-}
+  struct ParamInfo
+    source: extract.go:103
+    why: "TODO: explain ParamInfo."
+    field Name: string
+    field Type: string
+    field IsMut: bool
 
-// DetectLanguage returns the source language from a compound .lyric extension.
-// "agent.go.lyric" → "go", "parser.py.lyric" → "python", "checker.ly.lyric" → "lyric"
-// Plain ".lyric" → "lyric" (default).
-// extract.go:66
-func DetectLanguage(filename string) string
+  struct TypeDefInfo
+    source: extract.go:110
+    why: "TODO: explain TypeDefInfo."
+    field Underlying: string
+    field Doc: string
+    field File: string
+    field Line: int
+    field Why: string
+    field Source: string
 
-// NewPackageInfo creates an initialized PackageInfo.
-// extract.go:102
-func NewPackageInfo(name string) *PackageInfo
+  struct LDDMeta
+    source: extract.go:122
+    why: "TODO: explain LDDMeta."
+    field Source: []string
+    field Why: string
+    field Lang: string
 
-// NewStructInfo creates an initialized StructInfo.
-// extract.go:113
-func NewStructInfo() *StructInfo
+  func SortedFieldsByName(fields []FieldInfo) []FieldInfo
+    source: extract.go:186
+    why: "TODO: explain SortedFieldsByName."
 
-// NewInterfaceInfo creates an initialized InterfaceInfo.
-// extract.go:121
-func NewInterfaceInfo() *InterfaceInfo
+  func DetectLanguage(filename string) string
+    source: extract.go:200
+    why: "TODO: explain DetectLanguage."
 
-// --- index ---
-// Auto-generated function/method index.
-// DO NOT EDIT below this line — regenerated by `lyre update`.
+  func NewPackageInfo(name string) *PackageInfo
+    source: extract.go:236
+    why: "TODO: explain NewPackageInfo."
+
+  func NewStructInfo() *StructInfo
+    source: extract.go:248
+    why: "TODO: explain NewStructInfo."
+
+  func NewInterfaceInfo() *InterfaceInfo
+    source: extract.go:255
+    why: "TODO: explain NewInterfaceInfo."

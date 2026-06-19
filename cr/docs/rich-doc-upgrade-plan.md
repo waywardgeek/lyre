@@ -1154,3 +1154,67 @@ Phase 6 (v1→v2 migration; pick up the deferred `isLyLyric` /
 plain-`.lyric` cleanup) → **Phase 7.5** (UDD enforcement extension in
 CR server — MUST land before Phase 7) → Phase 7 (docs + backfill
 `checker.ly.lyric`).
+
+
+### 2026-06-19 — Phase 6 complete
+
+v1→v2 migration of all in-tree `.lyric` files plus the deferred
+`isLyLyric`/plain-`.lyric` cleanup. ~15 min vs ½-day plan estimate.
+`go build ./...` clean. `go test ./...` 100% green. `/tmp/lyre verify`
+clean on all 6 in-tree `.lyric` files.
+
+**Migrated** (5 files; one was already v2 from Phase 3a's dogfood):
+
+- `pkg/ast/ast.go.lyric` — non-empty `//ldd:why` prose preserved into v2
+  `module ast: why:` slot via a single `edit_file` post-regeneration. No
+  other meaningful prose to lift (the v1 file was bare-skeleton beyond
+  the one ldd:why line).
+- `pkg/parser/parser.go.lyric`
+- `pkg/verifier/verifier.go.lyric`
+- `pkg/extract/extract.go.lyric`
+- `pkg/extract/python/python.go.lyric`
+
+All four had empty `//ldd:why ""` — no prose to preserve. Migration
+mechanically: `rm <file>` then `lyre gen --rich <dir>`. Five
+regenerations, zero manual content porting beyond ast.
+
+The fifth in-tree file, `pkg/extract/golang/golang.go.lyric`, was
+already v2 (regenerated at the end of Phase 3a) — skipped.
+
+Post-migration: `lyre lint pkg/ast/ast.go.lyric` fires neither W001
+(module why preserved) nor W002 (Architecture block exists, TODO-filled
+— W002 only fires when the block itself is missing). Lint output is
+W008-only, as expected for `--rich`-generated files.
+
+**`isLyLyric` cleanup** (was deferred from Phase 3c). With zero
+remaining plain `.lyric` files in-tree and `pkg/verifier` having no
+other consumer than `cmd/lyre/main.go` (`grep -rn pkg/verifier
+--include='*.go'` confirmed), the legacy plain-`.lyric` machinery
+collapses cleanly:
+
+- `cmd/lyre/main.go`: removed the `isLyLyric` helper, the
+  verifier-fallback branches in both `cmdVerify` and `cmdUpdate`, the
+  `runUpdate` stub, the `prune` flag plumbing (its only consumer was
+  `runUpdate`), and the `pkg/verifier` import. -33 lines net.
+- `pkg/verifier/` and `pkg/parser/` deleted entirely (`rm -rf`). They
+  carried the legacy plain-`.lyric` syntax parser and verifier; their
+  tests went with them. `pkg/verifier` was imported only by
+  `cmd/lyre/main.go`; `pkg/parser` was imported only by `pkg/verifier`.
+  Zero remaining consumers.
+
+**`lyre fmt`** stub remains (`cmd/lyre/main.go: cmdFmt`). The v2
+`.lyric` format already round-trips losslessly through
+`pkg/udd/Parse → Write`; a real `lyre fmt` implementation is a tiny
+follow-up that loops the udd parse/write pipeline over its inputs.
+Not in Phase 6's scope; logged.
+
+**Velocity calibration**: 15 min vs ½-day. The migration pattern
+(`rm <v1>; lyre gen --rich <dir>; commit`) is mechanical and could
+trivially be scripted as `lyre migrate <dir>` if more v1 files turn
+up in `~/projects/lyric/src/`. Phase 7's `checker.ly.lyric` backfill
+will exercise that path.
+
+### Up next
+
+Phase 7.5 (UDD enforcement extension in CR server — MUST land before
+Phase 7) → Phase 7 (docs + backfill `checker.ly.lyric`).
