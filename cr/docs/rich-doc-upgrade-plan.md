@@ -1218,3 +1218,61 @@ will exercise that path.
 
 Phase 7.5 (UDD enforcement extension in CR server — MUST land before
 Phase 7) → Phase 7 (docs + backfill `checker.ly.lyric`).
+
+### 2026-06-19 — Phase 7.5 complete
+
+Landed in `~/projects/coderhapsody/` (separate repo from Lyre — this is
+the CR server that runs me). The `.forge` read-before-write gate now
+treats `.lyric` files as equivalent design-file sentinels.
+
+**Shape of the change** (small, surgical, mirrors existing `.forge`
+pattern exactly):
+
+- `pkg/tools/types.go`: renamed `uddForgeReads` → `uddDesignReads`.
+- `pkg/tools/file_ops.go`: `checkUDDGate` now scans the directory for
+  either `.forge` or `.lyric` and includes the detected kind in the
+  error message. `trackUDDForgeRead` → `trackUDDDesignRead` recognising
+  both extensions. `ResetUDDState` clears the same map.
+- Comment updates in the three model clients (`claude_client`,
+  `openai_client`, `gemini_client_core`) and `pkg/database/interfaces.go`
+  to reflect the broadened scope.
+- `pkg/skills/builtin/udd/SKILL.md` (the system-prompt template): Core
+  Rule now reads "directory that contains a `.forge` or `.lyric` file";
+  added explicit note that `.forge` and `.lyric` are equivalent and that
+  `.lyric` is the v2 format used by `lyre` (with per-language variants
+  `foo.go.lyric`, `bar.py.lyric`, `baz.ly.lyric`).
+- `pkg/tools/udd_test.go`: kept the four existing `.forge` tests;
+  added four `.lyric` tests — Blocks/Allows/MixedForgeAndLyric/
+  ResetClearsLyric. Mixed test asserts current per-directory single-
+  sentinel semantics: reading either kind unlocks the directory.
+
+**Design decision (KISS)**: kept the single-sentinel-per-directory
+semantics of the existing `.forge` gate rather than introducing a
+per-source-file mapping (e.g. editing `ast.go` specifically requires
+`ast.go.lyric`). The natural per-file semantics is more precise but
+would be a behaviour change beyond the spec; the simpler equivalence
+is what the Phase 7.5 amendment asked for. Future refinement is one
+small follow-up if desired.
+
+**Build / tests**: `go build ./pkg/...` clean. All 8 UDD tests pass
+(`go test ./pkg/tools/ -run UDD -v`). One pre-existing `TestExecuteListSkills`
+failure on `pkg/tools` is environment-dependent (expects 0 global skills,
+finds 19 installed in the dev tree) — confirmed identical failure on
+`main` without the patch.
+
+**Activation**: patch is on disk but not live in the running CR server.
+`coderhapsody` on port 8082 is the server running me; Bill restarts to
+activate. Phase 7's `checker.ly.lyric` backfill should wait for that
+restart so the new enforcement actually gates the backfill work.
+
+**Velocity**: ~15 min vs 3–4h plan estimate. The existing `.forge` code
+was clean, well-localized, and well-tested — extending it was almost
+purely a renaming + suffix-set widening. Sprint-wide pattern holds:
+quote single-digit hours for well-spec'd template work against a
+settled architecture on Opus 4.7.
+
+### Up next
+
+Phase 7 (docs + backfill `~/projects/lyric/src/checker/checker.ly.lyric`
+from `checker.forge` — after Bill restarts the CR server so the
+extended enforcement is live during the backfill).
