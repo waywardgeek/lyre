@@ -281,17 +281,32 @@ func fieldListString(fl *ast.FieldList) string {
 }
 
 // ScanSourceFiles returns all non-test .go files in a directory, sorted.
+//
+// Fallback: if the directory contains only *_test.go files (e.g. an
+// integration-test directory), those are returned instead so the extractor
+// can produce a useful .lyric. The production-vs-test distinction is
+// preserved in normal mixed dirs — _test.go files are only included when
+// there are no production files. See TODO.md ("Test-only directories
+// rejected by Go extractor").
 func ScanSourceFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	var files []string
+	var files, testOnly []string
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			files = append(files, name)
+		if !strings.HasSuffix(name, ".go") {
+			continue
 		}
+		if strings.HasSuffix(name, "_test.go") {
+			testOnly = append(testOnly, name)
+			continue
+		}
+		files = append(files, name)
+	}
+	if len(files) == 0 && len(testOnly) > 0 {
+		files = testOnly
 	}
 	sort.Strings(files)
 	return files, nil

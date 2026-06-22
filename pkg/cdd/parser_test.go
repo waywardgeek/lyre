@@ -313,3 +313,56 @@ func TestParse_Error_TitleMissingColon(t *testing.T) {
     """
 `, "expected `:` after doc title")
 }
+
+// --- regression: embedded fields (TODO 2026-06-19) ----------------------
+
+// TestParse_EmbeddedFieldDottedName covers the Go cross-package embedded-
+// field case where the extractor emits `field <pkg>.<TypeName>` with no
+// signature. The parser must accept the dotted-qualified name in field-head
+// position whenever no `:` separator follows. See TODO.md (2026-06-19,
+// Project Leadfoot CDD bootstrap).
+func TestParse_EmbeddedFieldDottedName(t *testing.T) {
+	p := mustParse(t, `module pkg
+
+  struct S
+    field x: int
+    field io.Reader
+    field a.b.C
+`)
+	s := p.Structs["S"]
+	if s == nil {
+		t.Fatalf("struct S not parsed")
+	}
+	if len(s.Fields) != 3 {
+		t.Fatalf("want 3 fields, got %d: %+v", len(s.Fields), s.Fields)
+	}
+	if s.Fields[0].Name != "x" || s.Fields[0].SignatureText != "int" {
+		t.Errorf("field 0 = %+v", s.Fields[0])
+	}
+	if s.Fields[1].Name != "io.Reader" || s.Fields[1].SignatureText != "" {
+		t.Errorf("field 1 = %+v (want Name=io.Reader, no sig)", s.Fields[1])
+	}
+	if s.Fields[2].Name != "a.b.C" || s.Fields[2].SignatureText != "" {
+		t.Errorf("field 2 = %+v (want Name=a.b.C, no sig)", s.Fields[2])
+	}
+}
+
+// TestParse_DottedNameWithType is informational: the relaxation that
+// admits dotted-qualified names in field-head position is unconditional,
+// so `field a.b: int` parses cleanly as Name="a.b", Sig="int". The Go
+// extractor never emits this form (only `field <pkg>.<TypeName>` with no
+// signature, for embedded fields), but accepting it costs nothing.
+func TestParse_DottedNameWithType(t *testing.T) {
+	p := mustParse(t, `module pkg
+
+  struct S
+    field a.b: int
+`)
+	s := p.Structs["S"]
+	if s == nil || len(s.Fields) != 1 {
+		t.Fatalf("want 1 field, got struct=%v", s)
+	}
+	if s.Fields[0].Name != "a.b" || s.Fields[0].SignatureText != "int" {
+		t.Errorf("got %+v", s.Fields[0])
+	}
+}

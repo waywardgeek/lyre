@@ -658,6 +658,23 @@ func (p *parser) parseFieldBlock(ind int, s *extract.StructInfo) error {
 		return p.errf(lineNum, "field line missing field name: %q", content)
 	}
 	after := rest[len(name):]
+	// Embedded-field tolerance: when the next char is `.`, extend the name
+	// through `.<identifier>` segments. The Go cross-package embedded-field
+	// case (`field <pkg>.<TypeName>` with no signature) is the motivating
+	// emit; admitting the form unconditionally also lets hand-authored
+	// `field foo.bar: int` parse with Name="foo.bar". Spec §3 grammar
+	// identifier remains [A-Za-z_][A-Za-z0-9_]* — this is a targeted
+	// relaxation of the field-head position only.
+	if strings.HasPrefix(after, ".") {
+		for strings.HasPrefix(after, ".") {
+			seg := leadingIdentifier(after[1:])
+			if seg == "" {
+				break
+			}
+			name = name + "." + seg
+			after = after[1+len(seg):]
+		}
+	}
 	after = strings.TrimLeft(after, " ")
 	field := extract.FieldInfo{Name: name}
 	if strings.HasPrefix(after, ":") {

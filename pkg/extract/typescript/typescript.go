@@ -237,7 +237,12 @@ func ExtractTs(srcDir string) (*extract.PackageInfo, error) {
 }
 
 // scanTsFiles returns the sorted list of non-test, non-declaration, non-
-// underscore-prefixed .ts files in dir (basenames only).
+// underscore-prefixed .ts and .tsx files in dir (basenames only).
+//
+// .tsx is accepted because the TypeScript compiler (via extract_api.js)
+// handles JSX natively when the source file uses the .tsx extension — no
+// extractor changes needed beyond admitting the extension here and in
+// detectDirLanguage.
 func scanTsFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -249,13 +254,19 @@ func scanTsFiles(dir string) ([]string, error) {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasSuffix(name, ".ts") {
+		isTS := strings.HasSuffix(name, ".ts")
+		isTSX := strings.HasSuffix(name, ".tsx")
+		if !isTS && !isTSX {
 			continue
 		}
+		// Test / declaration / generated artifact filters.
 		if strings.HasSuffix(name, ".test.ts") ||
+			strings.HasSuffix(name, ".test.tsx") ||
 			strings.HasSuffix(name, ".spec.ts") ||
+			strings.HasSuffix(name, ".spec.tsx") ||
 			strings.HasSuffix(name, ".d.ts") ||
-			strings.HasSuffix(name, ".ts.lyric") {
+			strings.HasSuffix(name, ".ts.lyric") ||
+			strings.HasSuffix(name, ".tsx.lyric") {
 			continue
 		}
 		if strings.HasPrefix(name, "_") {

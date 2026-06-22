@@ -447,11 +447,19 @@ func detectDirLanguage(dir string) string {
 		switch {
 		case strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go"):
 			found["go"] = true
+		case strings.HasSuffix(name, "_test.go"):
+			// Test-only directories should still be detected as "go" so the
+			// Go extractor can choose to include _test.go when no production
+			// files exist. Tracked at "go-test" to keep priority semantics
+			// clean; downstream we collapse it into "go".
+			found["go-test"] = true
 		case strings.HasSuffix(name, ".ly"):
 			found["lyric"] = true
 		case strings.HasSuffix(name, ".py"):
 			found["python"] = true
-		case strings.HasSuffix(name, ".ts"):
+		case strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".tsx"):
+			// .tsx is TypeScript with JSX; the TS compiler API handles both
+			// natively based on the file extension.
 			found["typescript"] = true
 		case strings.HasSuffix(name, ".rs"):
 			found["rust"] = true
@@ -461,6 +469,11 @@ func detectDirLanguage(dir string) string {
 		if found[lang] {
 			return lang
 		}
+	}
+	// Fallback: test-only Go directory. We return "go" so the extractor can
+	// surface a useful error or (post-fix) include _test.go files.
+	if found["go-test"] {
+		return "go"
 	}
 	return "unknown"
 }
