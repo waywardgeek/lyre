@@ -69,6 +69,40 @@ func (w *writer) blank() {
 	w.b.WriteByte('\n')
 }
 
+// flattenSig collapses any internal newlines and runs of whitespace in a
+// signature/type string into single spaces, then trims. The `.lyric` v2
+// grammar is line-oriented: `field <name>: <sig>`, `method <sig>`, `func
+// <sig>`, and `typedef <name>: <underlying>` MUST occupy exactly one physical
+// line, because the parser interprets any deeper-indented follow-up line as a
+// child key in the enclosing block. Native-language extractors (notably the
+// TypeScript extractor, which copies inline-object type literals verbatim
+// from source) can produce signatures containing embedded newlines; emitting
+// those would write a file the parser then rejects on its very next read —
+// the round-trip property Parse(Write(p)) ≡ p (spec §1) requires this
+// flattening at the writer boundary. See pkg/cdd/writer_test.go:
+// TestWrite_MultiLineSignatureFlattened.
+func flattenSig(s string) string {
+	if !strings.ContainsAny(s, "\n\r\t") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	inSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\n' || c == '\r' || c == '\t' || c == ' ' {
+			if !inSpace {
+				sb.WriteByte(' ')
+				inSpace = true
+			}
+			continue
+		}
+		sb.WriteByte(c)
+		inSpace = false
+	}
+	return strings.TrimSpace(sb.String())
+}
+
 // quote returns a double-quoted form of s with minimal escapes: only `"` and
 // `\` are escaped, per spec §12 decision 5.
 func quote(s string) string {
@@ -276,7 +310,7 @@ func (w *writer) iface(ind int, name string, i *extract.InterfaceInfo) {
 }
 
 func (w *writer) funcDecl(ind int, name string, f *extract.FuncInfo) {
-	sig := f.SignatureText
+	sig := flattenSig(f.SignatureText)
 	if sig == "" {
 		sig = name + "()"
 	}
@@ -286,7 +320,7 @@ func (w *writer) funcDecl(ind int, name string, f *extract.FuncInfo) {
 
 func (w *writer) typedefDecl(ind int, name string, t *extract.TypeDefInfo) {
 	if t.Underlying != "" {
-		w.line(ind, "typedef "+name+": "+t.Underlying)
+		w.line(ind, "typedef "+name+": "+flattenSig(t.Underlying))
 	} else {
 		w.line(ind, "typedef "+name)
 	}
@@ -306,7 +340,7 @@ func (w *writer) declMeta(ind int, source, why string) {
 func (w *writer) fieldBlock(ind int, f extract.FieldInfo) {
 	head := "field " + f.Name
 	if f.SignatureText != "" {
-		head += ": " + f.SignatureText
+		head += ": " + flattenSig(f.SignatureText)
 	}
 	w.line(ind, head)
 	if f.Doc != "" {
@@ -351,7 +385,7 @@ func (w *writer) methods(ind int, ms map[string]*extract.FuncInfo) {
 		})
 	}
 	for _, r := range refs {
-		sig := r.f.SignatureText
+		sig := flattenSig(r.f.SignatureText)
 		if sig == "" {
 			sig = r.name + "()"
 		}

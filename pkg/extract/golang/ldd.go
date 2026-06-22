@@ -625,7 +625,9 @@ func normalizeSig(s string) string {
 	inSpace := false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == ' ' || c == '\t' {
+		// \n and \r included so multi-line type forms compare equal to the
+		// writer's flattened form (pkg/cdd/writer.go:flattenSig).
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
 			if !inSpace {
 				b.WriteByte(' ')
 				inSpace = true
