@@ -232,6 +232,43 @@ func DetectLanguage(filename string) string {
 	return "lyric"
 }
 
+// SanitizeModuleName converts a directory base name into a valid Lyric
+// identifier matching the parser's `leadingIdentifier` grammar
+// ([A-Za-z_][A-Za-z0-9_]*). Any rune that is not an ASCII letter, digit, or
+// underscore is mapped to `_` (so "foo-bar" → "foo_bar", "foo.bar" →
+// "foo_bar"). A leading digit gets a leading `_` prefix ("123abc" →
+// "_123abc"). An empty input (or input that sanitizes to "") returns
+// "_module" so the result is always a valid identifier.
+//
+// Used by language extractors (TypeScript, Python, Lyric) to derive the
+// `module` identifier from `filepath.Base(absDir)`. Go does not need this
+// because it derives the module name from the source's `package` declaration,
+// which Go itself already constrains to a valid identifier.
+func SanitizeModuleName(name string) string {
+	if name == "" {
+		return "_module"
+	}
+	out := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			out = append(out, c)
+		case c >= '0' && c <= '9':
+			if len(out) == 0 {
+				out = append(out, '_')
+			}
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	if len(out) == 0 {
+		return "_module"
+	}
+	return string(out)
+}
+
 // NewPackageInfo creates an initialized PackageInfo.
 func NewPackageInfo(name string) *PackageInfo {
 	return &PackageInfo{

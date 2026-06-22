@@ -170,3 +170,38 @@ func TestSortedFieldsByName(t *testing.T) {
 		t.Fatalf("SortedFieldsByName mutated input slice")
 	}
 }
+
+// TestSanitizeModuleName locks in the rule used by Generate*/Extract* paths
+// to convert a directory base name into a valid Lyric identifier. The .lyric
+// parser's leadingIdentifier rule (pkg/cdd/parser.go) accepts only
+// [A-Za-z_][A-Za-z0-9_]*; any directory containing hyphens, dots, spaces,
+// etc. used to produce an unparseable `module foo-bar` line.
+func TestSanitizeModuleName(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"foo-bar", "foo_bar"},
+		{"foo.bar", "foo_bar"},
+		{"123abc", "_123abc"},
+		{"", "_module"},
+		{"valid_name", "valid_name"},
+		{"with spaces", "with_spaces"},
+		{"auth-desktop-callback", "auth_desktop_callback"},
+		// Multiple separators collapse to multiple underscores (one per char).
+		{"a--b", "a__b"},
+		// Already-valid identifiers including digits in the middle survive.
+		{"abc123", "abc123"},
+		// Leading underscore is preserved.
+		{"_private", "_private"},
+		// All-invalid input still yields a valid identifier.
+		{"---", "___"},
+		// Unicode / high bytes are mapped to underscores (we are ASCII-only).
+		{"café", "caf__"},
+	}
+	for _, c := range cases {
+		got := SanitizeModuleName(c.in)
+		if got != c.want {
+			t.Errorf("SanitizeModuleName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -232,7 +232,7 @@ func ExtractLy(srcDir string) (*extract.PackageInfo, error) {
 		return nil, err
 	}
 
-	p := extract.NewPackageInfo(filepath.Base(absDir))
+	p := extract.NewPackageInfo(extract.SanitizeModuleName(filepath.Base(absDir)))
 	p.ModuleSource = files
 	mergeJSONInto(p, raw)
 	return p, nil

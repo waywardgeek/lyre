@@ -223,7 +223,7 @@ func ExtractTs(srcDir string) (*extract.PackageInfo, error) {
 		return nil, fmt.Errorf("no .ts files found in %s", srcDir)
 	}
 
-	p := extract.NewPackageInfo(filepath.Base(absDir))
+	p := extract.NewPackageInfo(extract.SanitizeModuleName(filepath.Base(absDir)))
 	p.ModuleSource = files
 
 	for _, name := range files {

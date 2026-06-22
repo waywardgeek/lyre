@@ -122,14 +122,18 @@ module extract
     source: extract.go:200
     why: "TODO: explain DetectLanguage."
 
+  func SanitizeModuleName(name string) string
+    source: extract.go:247
+    why: "Map a directory base name to a valid Lyric identifier so the generated `module` line parses."
+
   func NewPackageInfo(name string) *PackageInfo
-    source: extract.go:236
+    source: extract.go:273
     why: "TODO: explain NewPackageInfo."
 
   func NewStructInfo() *StructInfo
-    source: extract.go:248
+    source: extract.go:285
     why: "TODO: explain NewStructInfo."
 
   func NewInterfaceInfo() *InterfaceInfo
-    source: extract.go:255
+    source: extract.go:292
     why: "TODO: explain NewInterfaceInfo."

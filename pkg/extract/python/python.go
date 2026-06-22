@@ -229,7 +229,7 @@ func ExtractPy(srcDir string) (*extract.PackageInfo, error) {
 	}
 	defer os.Remove(scriptPath)
 
-	p := extract.NewPackageInfo(filepath.Base(absDir))
+	p := extract.NewPackageInfo(extract.SanitizeModuleName(filepath.Base(absDir)))
 	p.ModuleSource = files
 	for _, f := range files {
 		raw, err := runExtract(scriptPath, filepath.Join(absDir, f))
