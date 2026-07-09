@@ -1,0 +1,111 @@
+module gen
+  source: ["rich.go"]
+  why: "Seeds empty rich-doc slots in a freshly-extracted PackageInfo so a later lint reports only unfilled placeholders, never missing structure."
+
+  doc "Architecture":
+    """
+    gen is a single-pass, in-place transformation step that sits between
+    extract and lint in the Lyre pipeline. Its sole public entry point,
+    SeedRichPlaceholders(p *extract.PackageInfo), traverses the whole
+    package model — module-level metadata, structs and their methods and
+    fields, interfaces and their methods, top-level functions, and
+    typedefs — and fills every empty rich-doc slot.
+
+    For each slot it first tries to migrate a legacy native-source comment
+    (the per-decl Doc field populated by the language extractors), reducing
+    it to a single crisp line via extract.CleanDocLine. If no legacy
+    comment exists it injects a standardized placeholder token that names
+    the declaration. The result is a model that satisfies lint's baseline
+    structural rules (W001/W002/W004), converting "missing documentation"
+    errors into "unfilled placeholder" (W008) warnings.
+
+    gen depends only on extract; it is decoupled from cdd and from the
+    language-specific extractors, and it never imports lint even though its
+    behavior is deliberately tuned to lint's warning codes.
+    """
+
+  doc "Data Flow":
+    """
+    Input:  a pointer to an extract.PackageInfo already populated by a
+            language extractor (per-decl Doc fields carry raw native
+            source comments; rich-doc slots such as ModuleWhy, the
+            "Architecture" doc block, and per-decl Why may be empty).
+    Action: SeedRichPlaceholders mutates the struct in place. Per slot:
+            empty + legacy Doc present  -> migrate cleaned first line;
+            empty + no legacy Doc       -> inject a placeholder token;
+            already has prose           -> leave untouched.
+    Output: the same PackageInfo, now carrying all placeholders lint
+            requires. Fields are cleaned but never given manufactured
+            placeholders; invariants are never manufactured.
+    """
+
+  doc "Design Decisions":
+    """
+    - Non-destructive by construction: every slot is guarded by a
+      TrimSpace(...)=="" check before writing, so human prose always wins.
+    - Migration reuses extract.CleanDocLine (moved to pkg/extract to avoid
+      an import cycle) so gen and the extractors reduce comments to a
+      single line identically.
+    - gen deliberately does NOT satisfy W003 (heavy-class invariants) or
+      W005 (field placeholders): invariants are caught-bug records that must be
+      human-authored, and field docs are a conscious human choice nudged
+      only in heavy structs. Auto-generating either would be noise.
+    """
+
+  doc "Dependencies":
+    """
+    - pkg/extract: provides the PackageInfo model, DocBlock, the per-decl
+      *Info structs, and the CleanDocLine one-line reduction utility.
+    lint is a symbiotic (not imported) dependency: gen seeds exactly the
+    placeholders lint's structural rules require, and no more.
+    """
+
+  invariant "Idempotent":
+    verified-by: TestSeedRich_EmptyPackage, TestSeedRich_Idempotent
+    """
+    Running SeedRichPlaceholders any number of times on the same
+    PackageInfo produces the same result: no duplicate doc blocks, no
+    re-seeded slots. Each write is guarded by an emptiness check, so a
+    second pass finds nothing empty to fill.
+    """
+
+  invariant "Never clobbers human-authored prose":
+    verified-by: TestSeedRich_PreservesExisting
+    """
+    A slot that already contains non-whitespace content is never
+    overwritten. This is the core non-destructive guarantee that makes gen
+    safe to run inside the update workflow, which merges fresh source data
+    with existing documentation.
+    """
+
+  invariant "Seeds exactly what lint's structural rules require":
+    verified-by: TestSeedRich_LintContract_EmptyPackage
+    """
+    After seeding a clean package, lint reports ONLY W008 (unfilled
+    placeholders). The baseline structural warnings W001 (module why),
+    W002 (Architecture block) and W004 (per-decl why) are all satisfied by
+    the seeded placeholders.
+    """
+
+  invariant "Never manufactures invariants or field TODOs":
+    verified-by: TestSeedRich_LintContract_HeavyClass
+    """
+    gen deliberately does not satisfy W003 (a heavy class with >=3 methods
+    and no invariants still triggers W003 after seeding) nor W005 (field
+    placeholders). Invariants are human-authored caught-bug records and field
+    documentation is a conscious human choice; auto-generating either would
+    be counterproductive boilerplate.
+    """
+
+  invariant "Migration reduces native comments to a single line":
+    verified-by: TestSeedRich_CleansFieldDoc, TestSeedRich_SeedsFromDoc
+    """
+    When a legacy per-decl Doc field is non-empty it is migrated into the
+    Why slot via extract.CleanDocLine, which strips comment markers and
+    keeps the first non-empty line — always yielding a value fit for the
+    one-line why: slot rather than a manufactured placeholder.
+    """
+
+  func SeedRichPlaceholders(p *extract.PackageInfo)
+    source: rich.go:30
+    why: "SeedRichPlaceholders mutates p in place, filling every empty rich-doc slot with a standardized placeholder or a migrated native-source comment, without ever overwriting existing prose."

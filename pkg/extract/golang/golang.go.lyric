@@ -1,60 +1,180 @@
 module golang
   source: ["golang.go","ldd.go"]
+  why: "Bridges Go's native AST (go/parser) to Lyre's language-agnostic PackageInfo and manages the .go.lyric documentation lifecycle."
+
+  doc "Architecture":
+    """
+    The golang extractor maps Go's native ASTs to the shared PackageInfo
+    model defined in pkg/extract. The pipeline: discover non-test .go files in
+    a directory (falling back to *_test.go files only when a directory has no
+    production files), parse them with go/parser preserving comments, traverse
+    the trees filtering for exported declarations, and capture each decl's
+    name, verbatim signature, and source position (file:line). Go doc comments
+    are scraped and collapsed to a one-line why: via extract.SeedWhyFromDoc.
+    The populated PackageInfo is returned in-memory or serialized to a
+    .go.lyric file by pkg/cdd.
+
+    Two extractors coexist: the live v2 ExtractGo (ldd.go) drives all commands
+    (Extract/Generate/Update/Verify); the v1 ExtractDir (golang.go) is legacy.
+    """
+
+  doc "The Merge Algorithm":
+    """
+    mergeFreshIntoExisting performs the non-destructive update. Signatures and
+    positions are always refreshed from the fresh extraction. Per-decl prose
+    follows the source-of-truth policy: a Go source doc comment overwrites the
+    .lyric why:; where the source has no comment, existing .lyric prose is
+    kept. Module-level metadata (module why:, named doc blocks, invariants) is
+    treated as purely human-curated and is always preserved. Per-field docs
+    fall back to existing .lyric content only when fresh extraction supplies
+    none.
+    """
+
+  doc "Signature and Type Normalization":
+    """
+    Signatures are stored as verbatim, opaque native Go text; verification
+    never parses them. sigMatch collapses runs of ASCII whitespace (including
+    newlines) to a single space and trims ends before byte-comparison, so a
+    multi-line source signature matches its flattened .lyric form. typesMatch
+    additionally treats `any` and `interface{}` as identical and strips
+    package-qualifier prefixes (context.Context vs Context) for resilience to
+    routine refactoring.
+    """
+
+  doc "Dependencies":
+    """
+    Self-contained: relies only on the Go standard library (go/ast,
+    go/parser, go/token, path/filepath) plus the core Lyre models. pkg/extract
+    provides PackageInfo/FuncInfo; pkg/cdd parses and writes the .lyric DSL
+    during update and generation.
+    """
+
+  invariant "Signatures are opaque verbatim native text":
+    verified-by: TestGenerateGo_RoundTripsThroughCDD, TestVerifyGo_Clean
+    """
+    Declaration signatures are stored as verbatim native Go text and only
+    string-compared modulo whitespace (sigMatch collapses runs of ASCII
+    whitespace, including newlines, to one space then byte-compares). The
+    toolchain never parses signature text.
+    """
+
+  invariant "Source code is the source of truth for per-decl why":
+    verified-by: TestUpdateGo_RefreshesWhyFromSource
+    """
+    On update, a Go source doc comment overwrites the per-decl why: in the
+    .lyric (source wins). Where the source has no comment, the existing .lyric
+    prose is preserved. why: is seeded from the FIRST line of the doc comment
+    via extract.SeedWhyFromDoc.
+    """
+
+  invariant "Module-level prose is human-curated and preserved on update":
+    verified-by: TestUpdateGo_AddsNewExport, TestUpdateGo_RefreshesWhyFromSource
+    """
+    Module why:, named doc "..." blocks, and invariant "..." blocks are
+    human-authored from the design docs and are never scraped from source;
+    UpdateGo always preserves them (and per-field docs the source lacks) while
+    refreshing signatures, positions, and adding new exports.
+    """
+
+  invariant "Only exported declarations are documented":
+    verified-by: TestExtractGo_SkipsUnexported
+    """
+    ExtractGo keeps only declarations whose name (or receiver type) begins
+    with an uppercase letter (IsExported); unexported types, fields, methods,
+    and functions are omitted from PackageInfo.
+    """
+
+  invariant "For fields the trailing line comment is preferred over a leading comment":
+    procedural
+    """
+    A leading comment on a struct field is often a section header shared by a
+    group of fields, so extraction prefers the trailing line comment
+    (`X int // does Y`, f.Comment) over the leading one (f.Doc) as the
+    per-field doc.
+    """
+
+  invariant "UpdateGo never prunes deleted declarations":
+    procedural
+    """
+    Declarations present in the .lyric but absent from source are NOT removed
+    by UpdateGo (a --prune option is planned for a later phase); VerifyGo
+    reports them as drift instead.
+    """
 
   func BuildSignature(fn *ast.FuncDecl, fset *token.FileSet) string
-    source: golang.go:301
+    source: golang.go:316
+    why: "BuildSignature produces a Go function signature string from a FuncDecl."
 
   func ExtractDir(dir string) (*extract.PackageInfo, error)
     source: golang.go:18
+    why: "ExtractDir parses all Go files in a directory and returns the exported API (legacy v1; the live path is ExtractGo)."
 
   func ExtractFiles(paths []string) (*extract.PackageInfo, error)
     source: golang.go:41
+    why: "ExtractFiles parses specific Go files and returns the exported API."
 
   func ExtractGo(srcDir string) (*extract.PackageInfo, error)
-    source: ldd.go:55
+    source: ldd.go:56
+    why: "ExtractGo is the v2 front door: it parses every non-test .go file in srcDir"
 
   func ExtractSource(src string, filename string) (*extract.PackageInfo, error)
     source: golang.go:60
+    why: "ExtractSource parses Go source from a string and returns declarations."
 
   func FindModulePath(dir string) string
-    source: golang.go:345
+    source: golang.go:360
+    why: "FindModulePath walks up from dir looking for go.mod and returns the module path."
 
   struct Finding
-    source: ldd.go:441
+    source: ldd.go:468
+    why: "Finding is a single verification report."
     field Severity: Severity
+      doc: "error/warning/info level of this finding"
     field File: string
+      doc: "the .lyric file the finding is about"
     field Source: string
+      doc: "the source location(s) compared against (e.g. \"golang.go, ldd.go\")"
     field Message: string
+      doc: "human-readable description of the drift or issue"
     method String() string
-      source: ldd.go:448
+      source: ldd.go:475
 
   func GenerateGo(srcDir string) (outPath, content string, err error)
-    source: ldd.go:228
+    source: ldd.go:244
+    why: "GenerateGo scaffolds the content for a fresh <pkgname>.go.lyric file for srcDir without writing to disk."
 
   func IsExported(name string) bool
-    source: golang.go:340
+    source: golang.go:355
+    why: "IsExported returns true if a Go name starts with an uppercase letter."
 
   func ScanSourceFiles(dir string) ([]string, error)
-    source: golang.go:284
+    source: golang.go:291
+    why: "ScanSourceFiles returns all non-test .go files in a directory, sorted."
 
   struct Severity
     method String() string
-      source: ldd.go:428
+      source: ldd.go:455
 
   typedef Severity: int
-    source: ldd.go:420
+    source: ldd.go:447
+    why: "Severity is the level of a verification Finding (error, warning, or info)."
 
   func TypeString(expr ast.Expr) string
     source: golang.go:198
+    why: "TypeString converts a Go AST type expression to a string representation."
 
   func UpdateGo(lyricPath string) (added []string, err error)
-    source: ldd.go:246
+    source: ldd.go:262
+    why: "UpdateGo refreshes lyricPath by re-extracting signatures/positions from Go source while preserving all human prose."
 
   func VerifyGo(lyricPath string) (*VerifyResult, error)
-    source: ldd.go:386
+    source: ldd.go:413
+    why: "VerifyGo detects drift by re-extracting the Go source next to lyricPath and deep-comparing it against the .lyric v2 file."
 
   struct VerifyResult
-    source: ldd.go:415
+    source: ldd.go:442
+    why: "VerifyResult holds all findings from a verification run."
     field Findings: []Finding
     method ErrorCount() int
-      source: ldd.go:466
+      source: ldd.go:493
+      why: "ErrorCount returns the number of SevError findings."

@@ -49,9 +49,10 @@ func docText(primary, fallback *ast.CommentGroup) string {
 
 // --- ExtractGo --------------------------------------------------------------
 
-// ExtractGo parses every non-test .go file in srcDir and returns the public
-// API as a PackageInfo whose SignatureText fields are populated for round-
-// trip through the .lyric v2 format. Only exported declarations are kept.
+// ExtractGo is the v2 front door: it parses every non-test .go file in srcDir
+// and returns the exported API as a PackageInfo whose SignatureText fields are
+// populated for round-trip through the .lyric v2 format. Only exported
+// declarations are kept.
 func ExtractGo(srcDir string) (*extract.PackageInfo, error) {
 	absDir, err := filepath.Abs(srcDir)
 	if err != nil {
@@ -237,9 +238,9 @@ func goFuncSigText(name string, ft *ast.FuncType) string {
 
 // --- GenerateGo / UpdateGo / VerifyGo --------------------------------------
 
-// GenerateGo scaffolds a fresh <pkgname>.go.lyric file for srcDir. It does
-// NOT write to disk; the caller chooses what to do with the returned content
-// (the lyre CLI writes only if the target doesn't already exist).
+// GenerateGo scaffolds the content for a fresh <pkgname>.go.lyric file for srcDir without writing to disk.
+// The caller chooses what to do with the returned content (the lyre CLI
+// writes only if the target doesn't already exist).
 func GenerateGo(srcDir string) (outPath, content string, err error) {
 	p, err := ExtractGo(srcDir)
 	if err != nil {
@@ -254,10 +255,10 @@ func GenerateGo(srcDir string) (outPath, content string, err error) {
 	return outPath, content, nil
 }
 
-// UpdateGo refreshes lyricPath: re-extracts signatures/positions from Go
-// source, adds new exports, preserves all human prose (ModuleWhy, Docs,
-// Invariants, per-decl Why, per-field Doc). Returns the human-readable list
-// of additions ("struct Foo", "func Bar", ...). Source list is refreshed.
+// UpdateGo refreshes lyricPath by re-extracting signatures/positions from Go source while preserving all human prose.
+// It adds new exports and preserves ModuleWhy, Docs, Invariants, per-decl Why,
+// and per-field Doc. Returns the human-readable list of additions ("struct
+// Foo", "func Bar", ...). Source list is refreshed.
 func UpdateGo(lyricPath string) (added []string, err error) {
 	raw, err := os.ReadFile(lyricPath)
 	if err != nil {
@@ -406,8 +407,9 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// VerifyGo parses lyricPath as a .go.lyric v2 file, re-extracts the Go
-// source it lives next to, and reports drift via Findings.
+// VerifyGo detects drift by re-extracting the Go source next to lyricPath and deep-comparing it against the .lyric v2 file.
+// Mismatched signatures, missing declarations, and undocumented exports are
+// reported via Findings.
 func VerifyGo(lyricPath string) (*VerifyResult, error) {
 	raw, err := os.ReadFile(lyricPath)
 	if err != nil {
@@ -441,7 +443,7 @@ type VerifyResult struct {
 	Findings []Finding
 }
 
-// Severity levels.
+// Severity is the level of a verification Finding (error, warning, or info).
 type Severity int
 
 const (
@@ -464,10 +466,10 @@ func (s Severity) String() string {
 
 // Finding is a single verification report.
 type Finding struct {
-	Severity Severity
-	File     string
-	Source   string
-	Message  string
+	Severity Severity // error/warning/info level of this finding
+	File     string   // the .lyric file the finding is about
+	Source   string   // the source location(s) compared against (e.g. "golang.go, ldd.go")
+	Message  string   // human-readable description of the drift or issue
 }
 
 func (f Finding) String() string {

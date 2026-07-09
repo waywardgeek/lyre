@@ -1,10 +1,10 @@
-// Package udd implements the parser and writer for the `.lyric` v2 format
-// — the file format used by Context-Driven Development.
+// Package cdd implements the parser and writer for the `.lyric` v2 format
+// — the persistence layer for Context-Driven Development.
 //
 // The format is a small indent-significant DSL whose payload lines (field
 // types, method signatures, function signatures) are verbatim native-language
 // text treated as opaque strings. See `pkg/cdd/spec.md` for the canonical
-// grammar and `~/projects/lyric/cr/docs/understanding-driven-development.md`
+// grammar and `~/projects/lyric/cr/docs/context-driven-development.md`
 // for the methodology this format implements.
 //
 // The package exposes two entry points:
@@ -37,9 +37,9 @@ import (
 	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
-// Write serializes p to its canonical `.lyric` v2 representation. The output
-// is deterministic: the same PackageInfo produces byte-identical output every
-// time. There is exactly one trailing newline; no line has trailing whitespace.
+// Write serializes p to its canonical, deterministic `.lyric` v2 representation.
+// The same PackageInfo produces byte-identical output every time; there is
+// exactly one trailing newline and no line has trailing whitespace.
 func Write(p *extract.PackageInfo) string {
 	var w writer
 	w.module(p)

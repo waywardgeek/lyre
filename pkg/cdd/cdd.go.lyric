@@ -1,0 +1,148 @@
+module cdd
+  source: ["parser.go","writer.go"]
+  why: "Core persistence layer: parser and writer for the human-readable, indent-significant .lyric v2 format capturing architectural intent."
+
+  doc "Architecture":
+    """
+    cdd is the translation layer between the pkg/extract PackageInfo data
+    model (the "narrow waist" of Lyre) and the on-disk .lyric v2 format.
+
+    Two entry points, mirror images of each other:
+      - Parse(text, filename) reads .lyric text into a PackageInfo. It is a
+        line-oriented, recursive-descent parser that classifies each line by
+        indentation (exactly 2 spaces per level), navigates via peek/consume
+        of "structural" (non-blank, non-comment) lines, and extracts heredoc
+        bodies and quoted strings.
+      - Write(p) serializes a PackageInfo back to canonical .lyric text.
+
+    The format captures eight rich-doc sections needed for parity with the
+    legacy .forge format: module-level why, doc blocks, invariant blocks,
+    per-decl why, per-field doc, bugs-caught prose (inside invariants),
+    the procedural marker, and source bindings. Signature payloads (field
+    types, method/function signatures) are verbatim native text treated as
+    opaque strings; the toolchain never parses them.
+
+    One .lyric file exists per (directory, language) pair, named
+    <dir>.<lang>.lyric; the inner extension routes to the per-language
+    extractor for signature verification.
+    """
+
+  doc "Dependencies":
+    """
+    cdd depends only on pkg/extract for the PackageInfo data model and its
+    helper types (StructInfo, InterfaceInfo, FuncInfo, TypeDefInfo,
+    FieldInfo, DocBlock, Invariant). It does NOT depend on any per-language
+    extractor: signatures are opaque rest-of-line text, so the parser and
+    writer are language-agnostic and need no knowledge of Go/TS/Py/Lyric
+    syntax.
+    """
+
+  invariant "Lossless round-trip":
+    verified-by: TestRoundTrip_CanonicalPackage
+    """
+    Parse(Write(p)) MUST be structurally equal to p for any well-formed
+    PackageInfo whose round-trippable fields are set. This is the module's
+    overriding design requirement: it lets the toolchain safely update
+    .lyric files (e.g. via `lyre update`) without losing human-authored
+    documentation or introducing unintended changes. The writer achieves
+    it with deterministic ordering; the parser achieves it by strictly
+    following the spec grammar.
+    """
+
+  invariant "Deterministic, canonical output":
+    verified-by: TestWrite_Deterministic
+    """
+    The writer MUST produce byte-identical output for the same PackageInfo
+    every time. .lyric files are checked into version control, so
+    non-deterministic output would create noisy diffs. Canonical ordering:
+    module keys are source, why, doc blocks (in Docs order), invariant
+    blocks (in Invariants order), then decls — sorted by (file, line) if
+    every decl is positioned, else alphabetically by name. Per-decl keys:
+    source, why, then children. Methods and fields follow the same
+    position-then-name ordering.
+    """
+
+  invariant "Signatures are opaque verbatim text":
+    verified-by: TestParse_QuotedStringEscapes
+    """
+    Field types, method signatures, and function signatures are captured as
+    the verbatim rest-of-line text after the keyword and stored as opaque
+    strings. The parser and writer never parse target-language syntax, so
+    the format supports any language (Go/TS/Py/Lyric) without modification.
+    Verification against a per-language extractor is whitespace-normalized
+    string equality only (strip, collapse internal whitespace, byte-compare)
+    — never structural parsing.
+    """
+
+  invariant "Signatures flatten to a single physical line":
+    verified-by: TestWrite_MultiLineSignatureFlattened
+    """
+    The grammar is line-oriented: `field <name>: <sig>`, `method <sig>`,
+    `func <sig>`, and `typedef <name>: <underlying>` MUST occupy exactly one
+    physical line, because the parser treats any deeper-indented follow-up
+    line as a child key. Native extractors (e.g. TypeScript inline object
+    type literals) can emit signatures with embedded newlines; the writer
+    MUST collapse all internal whitespace and newlines to single spaces
+    (flattenSig) so the emitted file re-parses — otherwise the round-trip
+    property breaks on the very next read.
+    """
+
+  invariant "Two-space indentation is significant":
+    verified-by: TestParse_Error_OddIndent, TestParse_Error_TabInIndent
+    """
+    Indentation is exactly 2 spaces per nesting level and defines the block
+    hierarchy (module at indent 0, its children at indent 1, and so on).
+    Tab characters anywhere in indentation are a parse error; an odd number
+    of leading spaces is a parse error. Increasing indent by more than one
+    level in a single step is a parse error. The writer always emits exactly
+    2 spaces per level.
+    """
+
+  invariant "Heredoc strip-by-own-indent":
+    verified-by: TestParse_DocBlock_PreservesBlankLines
+    """
+    Multi-line prose in doc and invariant blocks is captured in a `"""`
+    heredoc. On parse, each content line has exactly the heredoc's own
+    indent stripped; the opening and closing fences are not part of the
+    value; empty lines are preserved; `#` is literal inside a heredoc.
+    The writer emits body lines at the heredoc's own indent so this strip
+    inverts exactly — the reason the property round-trips.
+    """
+
+  invariant "Stateless and thread-safe":
+    procedural
+    """
+    The module holds no package-level mutable state. The parser and writer
+    structs are internal and instantiated fresh for each Parse or Write
+    call, so Parse and Write are safe to call concurrently. (Callers must
+    still avoid mutating a single PackageInfo while it is being written;
+    PackageInfo itself is not thread-safe.)
+    """
+
+  invariant "Minimal quoted-string escapes":
+    verified-by: TestParse_QuotedStringEscapes
+    """
+    Quoted strings recognize only two escapes: \" (literal double-quote)
+    and \\ (literal backslash). Sequences like \n and \t are NOT
+    interpreted; for multi-line prose use a heredoc instead. A `why:` value
+    is always a single line — the writer does not escape newlines in it.
+    """
+
+  invariant "Closed set of block heads and keys":
+    verified-by: TestParse_Error_FieldWhyRejected, TestParse_Error_UnrecognizedKey
+    """
+    Recognized block heads (module/class/struct/interface/enum/typedef/
+    field/method/func/doc/invariant) and inline keys (why/source/doc/
+    verified-by/procedural) form a closed set; an unrecognized first token
+    on a line is a parse error. Scope rules are enforced: `why:` is invalid
+    at field scope (rationale must be promoted to a module-scope doc block);
+    interfaces admit only `method` children, never `field`.
+    """
+
+  func Parse(text, filename string) (*extract.PackageInfo, error)
+    source: parser.go:15
+    why: "Parse reads `.lyric` v2 source text into a PackageInfo, or returns a detailed error."
+
+  func Write(p *extract.PackageInfo) string
+    source: writer.go:43
+    why: "Write serializes p to its canonical, deterministic `.lyric` v2 representation."

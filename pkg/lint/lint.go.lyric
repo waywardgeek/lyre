@@ -1,0 +1,168 @@
+module lint
+  source: ["lint.go"]
+  why: "Language-agnostic quality linter that inspects a parsed PackageInfo and reports recoverable .lyric documentation-hygiene issues (W001-W008)."
+
+  doc "Architecture":
+    """
+    lint is a stateless, functional transformation pipeline: it consumes a
+    high-level semantic model (extract.PackageInfo) and produces a sorted set
+    of quality findings. It is distinct from the verifier, which detects drift
+    between .lyric and native source; lint instead inspects the .lyric's own
+    content for completeness, placeholder-hygiene, and test-name validity.
+
+    The single entry point Lint() takes a *extract.PackageInfo, the .lyric
+    path (used only for reporting), and an Opts config. It initializes a Result
+    container and runs eight internal check functions, w001 through w008, in
+    sequence. Each check traverses the relevant part of the PackageInfo tree
+    (module prose, structs, interfaces, invariants, typedefs) and appends any
+    issue it finds. Findings carry a W-code, a Severity, the file, a
+    human-readable "Where" scope hint, and a message.
+
+    A defining feature is structural heuristics: the linter does not treat all
+    code equally, but scales the expected documentation to the complexity of
+    the code (e.g. method and field counts). After all checks run, findings are
+    stable-sorted by (Code, Where) so identical input always yields identical
+    output — essential for CI and diffable reports. lint depends only on
+    pkg/extract and is decoupled from cdd and the language extractors.
+    """
+
+  doc "Rule Set (W001-W008)":
+    """
+    The eight rules fall into three groups:
+
+    Heuristic presence/depth rules (W001-W005):
+      W001  module-level why: is empty.
+      W002  no doc "Architecture" block.
+      W003  a module with a class/struct/interface of >=3 methods has no
+            invariant blocks at all (heavy state machines must document
+            their invariants).
+      W004  a class/struct with >=4 methods has no per-method why: at all.
+      W005  a struct with >=3 fields including >=1 enum-typed field (detected
+            by matching the field's signature text against p.TypeDefs) has no
+            per-field doc:.
+
+    Invariant/test integrity rules (W006-W007):
+      W006  an invariant has neither a verified-by: clause nor a procedural
+            marker (untested invariants are hypotheses, not facts).
+      W007  a verified-by: name references a test that does not exist; dormant
+            unless Opts.KnownTests is non-nil.
+
+    Placeholder hygiene (W008):
+      W008  the case-sensitive placeholder token (the four-letter marker for
+            unfinished work) appears anywhere in prose (module why, doc blocks,
+            invariants, and per-decl why:/doc:).
+    """
+
+  doc "Dependencies":
+    """
+    lint depends only on pkg/extract: it reads the PackageInfo data model and
+    its constituent types (StructInfo, InterfaceInfo, FuncInfo, FieldInfo,
+    Invariant, DocBlock, TypeDefInfo) to apply its heuristics. It is decoupled
+    from pkg/cdd and the language-specific extractors, and it is symbiotic with
+    gen: gen seeds the very structure (module why, Architecture doc, per-decl
+    why placeholders) that lint requires be filled in.
+    """
+
+  invariant "Output is deterministic and sorted":
+    verified-by: TestLint_CleanPackage, TestLint_DeterministicOrder
+    """
+    After all checks run, findings are stable-sorted with primary key Code and
+    secondary key Where. Identical input always produces the identical sequence
+    of findings, which is required for diffable reports and stable CI output.
+    """
+
+  invariant "Lint does not mutate its input and is thread-safe":
+    procedural
+    """
+    Lint treats *extract.PackageInfo as read-only: it only reads the model and
+    appends to its own Result. It holds no shared mutable state, so it is safe
+    to call concurrently on the same PackageInfo.
+    """
+
+  invariant "Documentation is proportional to code complexity":
+    verified-by: TestLint_W003_HeavyClassNoInvariants, TestLint_W003_LightModuleNoTrigger, TestLint_W003_TriggeredByInterface, TestLint_W004_HeavyClassNoMethodWhy, TestLint_W005_EnumFieldNoDoc
+    """
+    The heavy-class heuristics fire only above hardcoded structural thresholds:
+    W003 requires an invariant block once any class/struct/interface has >=3
+    methods; W004 requires at least one per-method why: once a class/struct has
+    >=4 methods; W005 requires at least one per-field doc: once a struct has >=3
+    fields including an enum-typed field. Below these thresholds the rules stay
+    silent, so light components are never over-documented.
+    """
+
+  invariant "W008 placeholder matching is case-sensitive":
+    verified-by: TestLint_W008_CaseSensitive
+    """
+    W008 uses a strict, case-sensitive substring match for exactly the
+    uppercase four-letter placeholder token, so ordinary lowercase words never
+    trigger a false placeholder warning.
+    """
+
+  invariant "W007 is dormant unless KnownTests is supplied":
+    verified-by: TestLint_W007_DormantWhenNilSet, TestLint_W007_KnownTestSuppresses, TestLint_W007_UnknownTest
+    """
+    Cross-referencing verified-by: names against real tests requires
+    Opts.KnownTests to be non-nil. When it is nil (the CLI default), W007 never
+    fires, so lint does not report missing tests it cannot know about.
+    """
+
+  invariant "Every invariant must be tested or marked procedural":
+    verified-by: TestLint_W006_InvariantWithoutVerification, TestLint_W006_ProceduralSuppresses
+    """
+    W006 fires for any invariant that has neither a verified-by: clause nor a
+    procedural marker. Invariants without a backing test or an explicit
+    procedural declaration are hypotheses, not facts, and are rejected.
+    """
+
+  invariant "lint depends only on pkg/extract":
+    procedural
+    """
+    lint imports only pkg/extract and standard library packages; it never
+    depends on pkg/cdd or the language-specific extractors, keeping the quality
+    engine decoupled from parsing and drift detection.
+    """
+
+  struct Finding
+    source: lint.go:55
+    why: "Finding is a single lint report. Code is the W001-W008 token."
+    field Code: string
+      doc: "The W001-W008 warning token identifying the rule that fired."
+    field Severity: Severity
+      doc: "WARNING or INFO; WarningCount counts only WARNING findings."
+    field File: string
+      doc: "The .lyric path passed to Lint, recorded for reporting."
+    field Where: string
+      doc: "Human-readable scope hint (e.g. \"class Foo\", `invariant \"Bar\"`)."
+    field Message: string
+      doc: "Human-readable description of the issue and how to fix it."
+    method String() string
+      source: lint.go:64
+      why: "String renders a Finding as a one-line \"[SEVERITY CODE] file: where: message\" report."
+
+  func Lint(p *extract.PackageInfo, lyricPath string, opts Opts) *Result
+    source: lint.go:99
+    why: "Lint runs all enabled checks against p. lyricPath is recorded on each"
+
+  struct Opts
+    source: lint.go:90
+    why: "Opts configures a lint run."
+    field KnownTests: map[string]bool
+      doc: "KnownTests is the set of test function names that exist in the project."
+
+  struct Result
+    source: lint.go:74
+    why: "Result holds all findings from a lint run. Findings are sorted by"
+    field Findings: []Finding
+    method WarningCount() int
+      source: lint.go:79
+      why: "WarningCount returns the number of SevWarning findings."
+
+  struct Severity
+    why: "Severity classifies lint findings as WARNING or INFO."
+    method String() string
+      source: lint.go:42
+      why: "String renders the Severity as an uppercase label (\"WARNING\", \"INFO\")."
+
+  typedef Severity: int
+    source: lint.go:34
+    why: "Severity classifies lint findings."

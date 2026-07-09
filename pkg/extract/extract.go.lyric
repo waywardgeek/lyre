@@ -1,139 +1,287 @@
 module extract
   source: ["extract.go"]
-  why: "TODO: one-line purpose of the extract module."
+  why: "Defines the language-agnostic PackageInfo model — the narrow-waist exchange format every extractor produces and every cdd/gen/lint consumer reads."
 
   doc "Architecture":
     """
-    TODO: explain the module's high-level structure.
+    The extract module is the architectural "narrow waist" of the Lyre
+    toolchain: a hub-and-spoke design in which every language-specific
+    extractor (go, lyric, python, typescript) is a spoke that populates one
+    shared data contract, PackageInfo, and every downstream consumer
+    (cdd, gen, lint) reads that same contract.
+
+    PackageInfo captures both STRUCTURE (structs, interfaces, functions,
+    typedefs) and the eight rich-doc sections needed for CDD parity: module
+    why, named DocBlocks, named Invariants (with procedural/verified-by
+    metadata), per-decl Why, per-field Doc, and source location bindings.
+
+    The core data structures live here (PackageInfo, StructInfo,
+    InterfaceInfo, FuncInfo, FieldInfo, TypeDefInfo, DocBlock, Invariant,
+    ParamInfo, LDDMeta) alongside language-agnostic utilities: constructors
+    (NewPackageInfo/NewStructInfo/NewInterfaceInfo), DetectLanguage,
+    SanitizeModuleName, and the doc-seeding helpers (CleanDocLine,
+    SeedWhyFromDoc, PreferFresh) that bridge native source comments into
+    per-decl why prose. The module depends almost exclusively on the Go
+    standard library, keeping it portable.
+    """
+
+  doc "Design Decisions":
+    """
+    Signatures are OPAQUE VERBATIM native text. Rather than build a
+    "Universal AST" that models every language's type system, extractors
+    store each signature (FuncInfo.SignatureText, FieldInfo.SignatureText)
+    as the exact native string found in source. Lyre only string-compares
+    signatures modulo whitespace and never parses them, so documentation
+    stays syntactically faithful and extraction is robust against language
+    changes.
+
+    Source-of-truth split: SOURCE CODE owns structure + per-decl why (lyre
+    scrapes leading doc comments into Why via SeedWhyFromDoc); the .lyric
+    MODULE-LEVEL sections (why, doc blocks, invariants) are human-curated
+    from the design docs and are never scraped. SeedWhyFromDoc fills only
+    empty Why slots so hand-authored prose is never clobbered; `lyre
+    update`'s merge uses PreferFresh so a present source comment wins while
+    prose on comment-less decls is preserved.
+
+    Passive data carriers: PackageInfo and its structs manage no concurrency
+    of their own; an extractor populates them single-threaded and passes them
+    through functional transformations. Callers synchronize if they process
+    a PackageInfo concurrently.
+    """
+
+  doc "Data Flow":
+    """
+    1. Discovery/Dispatch: identify the target directory and its language.
+    2. Native Extraction: the language-specific extractor parses source
+       (in-process or via an external bridge) and finds exported decls.
+    3. Model Population: native decls map into PackageInfo; signatures are
+       captured verbatim and leading comments scraped as initial docs.
+    4. Normalization/Seeding: shared helpers normalize the data —
+       SanitizeModuleName validates the module id, SeedWhyFromDoc migrates
+       the first comment line into per-decl Why.
+    5. Downstream Consumption: the populated PackageInfo flows to pkg/cdd
+       (serialize to .lyric), pkg/lint (quality checks), pkg/gen (scaffold
+       placeholders).
+    """
+
+  invariant "Signatures are opaque verbatim native text":
+    verified-by: TestPackageInfo_JSONRoundTrip
+    """
+    Signatures (FuncInfo.SignatureText, FieldInfo.SignatureText) are stored
+    as verbatim native-language strings and only string-compared modulo
+    whitespace. The toolchain never parses them, avoiding the "Universal
+    AST" trap and keeping docs syntactically faithful to the source language.
+    """
+
+  invariant "PackageInfo is the universal exchange format":
+    procedural
+    """
+    PackageInfo is the single data contract between all language extractors
+    and all downstream consumers (cdd/gen/lint). Supporting a new language
+    means adding one extractor that populates PackageInfo — the core
+    documentation logic must never change to accommodate it.
+    """
+
+  invariant "Source wins on update, without clobbering hand-written prose":
+    verified-by: TestPreferFresh, TestSeedWhyFromDoc
+    """
+    Source code is the source of truth for per-decl why. SeedWhyFromDoc fills
+    ONLY empty Why slots, so hand-authored .lyric prose is never overwritten;
+    `lyre update`'s merge uses PreferFresh so a present source comment wins
+    while prose on comment-less decls is preserved. Module-level why, doc
+    blocks, and invariants are human-curated and never scraped.
+    """
+
+  invariant "why: is a single line":
+    verified-by: TestCleanDocLine
+    """
+    The .lyric why: slot is a single quoted string (the writer does not
+    escape newlines). CleanDocLine reduces a multi-line native comment to one
+    collapsed line before it is stored as why prose.
+    """
+
+  invariant "SanitizeModuleName always yields a valid Lyric identifier":
+    verified-by: TestSanitizeModuleName
+    """
+    Any directory base name is mapped to [A-Za-z_][A-Za-z0-9_]*: non-ident
+    runes become '_', a leading digit gets a '_' prefix, and empty input
+    returns "_module", so the generated `module` line always parses.
+    """
+
+  invariant "PackageInfo structures are passive data carriers":
+    procedural
+    """
+    PackageInfo and its constituent structs hold no concurrency machinery.
+    An extractor populates them single-threaded and passes them through
+    functional transformations; callers are responsible for any
+    synchronization if they process a PackageInfo concurrently.
     """
 
   struct PackageInfo
-    source: extract.go:15
-    why: "TODO: explain PackageInfo."
+    source: extract.go:18
+    why: "PackageInfo is the language-agnostic representation of a package's exported"
     field Name: string
     field Structs: map[string]*StructInfo
     field Interfaces: map[string]*InterfaceInfo
     field Functions: map[string]*FuncInfo
     field TypeDefs: map[string]*TypeDefInfo
     field ModuleWhy: string
+      doc: "module-level \"why\" prose"
     field ModuleSource: []string
+      doc: "module-level `source: [\"a.go\", \"b.go\"]` file list"
     field Docs: []DocBlock
+      doc: "named doc \"...\" blocks (e.g. \"Architecture\")"
     field Invariants: []Invariant
+      doc: "named invariant \"...\" blocks"
 
   struct DocBlock
-    source: extract.go:30
-    why: "TODO: explain DocBlock."
+    source: extract.go:33
+    why: "DocBlock is a titled prose section (e.g. doc \"Architecture\":)."
     field Title: string
     field Content: string
 
   struct Invariant
-    source: extract.go:36
-    why: "TODO: explain Invariant."
+    source: extract.go:39
+    why: "Invariant is a titled invariant block with optional verification metadata."
     field Title: string
     field Content: string
     field Procedural: bool
+      doc: "marked `procedural` — cannot be mechanically tested"
     field VerifiedBy: []string
+      doc: "test function names that verify this invariant"
 
   struct StructInfo
-    source: extract.go:44
-    why: "TODO: explain StructInfo."
+    source: extract.go:47
+    why: "StructInfo describes a struct/class with fields and methods."
     field Fields: []FieldInfo
+      doc: "ordered list of fields; was map[string]string before Phase 1"
     field Methods: map[string]*FuncInfo
     field Doc: string
+      doc: "leading doc comment, if any (legacy; for richer docs use Why)"
     field File: string
+      doc: "source file name (basename)"
     field Line: int
+      doc: "line number in source file"
     field IsClass: bool
+      doc: "true if this is a class (reference type), false for struct (value type)"
     field Why: string
+      doc: "per-decl \"why\" prose"
     field Source: string
+      doc: "canonical \"file:line\" reference; refreshed by `lyre update`"
     method FieldSig(name string) (string, bool)
-      source: extract.go:135
-      why: "TODO: explain StructInfo.FieldSig."
+      source: extract.go:138
+      why: "FieldSig returns the SignatureText of the named field, if present."
     method HasField(name string) bool
-      source: extract.go:145
-      why: "TODO: explain StructInfo.HasField."
+      source: extract.go:148
+      why: "HasField reports whether the struct has a field with the given name."
     method SetField(name, sig string)
-      source: extract.go:153
-      why: "TODO: explain StructInfo.SetField."
+      source: extract.go:156
+      why: "SetField appends or updates a field by name. Order is preserved on update;"
     method SetFieldDoc(name, doc string)
-      source: extract.go:165
-      why: "TODO: explain StructInfo.SetFieldDoc."
+      source: extract.go:168
+      why: "SetFieldDoc sets the per-field doc for the named field. Creates the field"
     method FieldNames() []string
-      source: extract.go:176
-      why: "TODO: explain StructInfo.FieldNames."
+      source: extract.go:179
+      why: "FieldNames returns the field names in source order."
 
   struct FieldInfo
-    source: extract.go:62
-    why: "TODO: explain FieldInfo."
+    source: extract.go:65
+    why: "FieldInfo describes a single struct/class field."
     field Name: string
     field SignatureText: string
     field Doc: string
+      doc: "per-field doc (rich-doc addition)"
 
   struct InterfaceInfo
-    source: extract.go:69
-    why: "TODO: explain InterfaceInfo."
+    source: extract.go:72
+    why: "InterfaceInfo describes an interface with methods."
     field Methods: map[string]*FuncInfo
     field Doc: string
     field File: string
     field Line: int
     field Why: string
+      doc: "per-decl \"why\" prose"
     field Source: string
+      doc: "canonical \"file:line\" reference; refreshed by `lyre update`"
 
   struct FuncInfo
-    source: extract.go:89
-    why: "TODO: explain FuncInfo."
+    source: extract.go:92
+    why: "FuncInfo describes a function or method signature."
     field SignatureText: string
+      doc: "verbatim native signature incl. name (Phase 2 round-trip)"
     field Params: []ParamInfo
+      doc: "extractor-internal; not round-tripped through .lyric"
     field Returns: []string
+      doc: "extractor-internal; not round-tripped through .lyric"
     field Doc: string
     field File: string
     field Line: int
     field Why: string
+      doc: "per-decl \"why\" prose"
     field Source: string
 
   struct ParamInfo
-    source: extract.go:103
-    why: "TODO: explain ParamInfo."
+    source: extract.go:106
+    why: "ParamInfo describes a function parameter."
     field Name: string
     field Type: string
     field IsMut: bool
 
   struct TypeDefInfo
-    source: extract.go:110
-    why: "TODO: explain TypeDefInfo."
+    source: extract.go:113
+    why: "TypeDefInfo describes a type alias or newtype and its underlying type."
     field Underlying: string
+      doc: "the underlying type string, if simple"
     field Doc: string
     field File: string
     field Line: int
     field Why: string
+      doc: "per-decl \"why\" prose"
     field Source: string
+      doc: "canonical \"file:line\" reference; round-trips through .lyric"
 
   struct LDDMeta
-    source: extract.go:122
-    why: "TODO: explain LDDMeta."
+    source: extract.go:125
+    why: "LDDMeta holds the LDD-specific metadata parsed from structured comments."
     field Source: []string
+      doc: "source files this understanding file covers"
     field Why: string
+      doc: "human explanation of what this package does"
     field Lang: string
+      doc: "detected language (go, python, typescript, lyric)"
 
   func SortedFieldsByName(fields []FieldInfo) []FieldInfo
-    source: extract.go:186
-    why: "TODO: explain SortedFieldsByName."
+    source: extract.go:189
+    why: "SortedFieldsByName returns a copy of the field slice sorted alphabetically"
 
   func DetectLanguage(filename string) string
-    source: extract.go:200
-    why: "TODO: explain DetectLanguage."
+    source: extract.go:203
+    why: "DetectLanguage returns the source language from a compound .lyric extension."
 
   func SanitizeModuleName(name string) string
-    source: extract.go:247
-    why: "Map a directory base name to a valid Lyric identifier so the generated `module` line parses."
+    source: extract.go:250
+    why: "SanitizeModuleName converts a directory base name into a valid Lyric"
 
   func NewPackageInfo(name string) *PackageInfo
-    source: extract.go:273
-    why: "TODO: explain NewPackageInfo."
+    source: extract.go:276
+    why: "NewPackageInfo creates an initialized PackageInfo."
 
   func NewStructInfo() *StructInfo
-    source: extract.go:285
-    why: "TODO: explain NewStructInfo."
+    source: extract.go:288
+    why: "NewStructInfo creates an initialized StructInfo. Fields starts empty; use"
 
   func NewInterfaceInfo() *InterfaceInfo
-    source: extract.go:292
-    why: "TODO: explain NewInterfaceInfo."
+    source: extract.go:295
+    why: "NewInterfaceInfo creates an initialized InterfaceInfo."
+
+  func CleanDocLine(doc string) string
+    source: extract.go:310
+    why: "CleanDocLine extracts a one-line summary from a multi-line native-source"
+
+  func PreferFresh(existing, fresh string) string
+    source: extract.go:339
+    why: "PreferFresh returns fresh when it is non-empty, else keeps existing. Source"
+
+  func SeedWhyFromDoc(p *PackageInfo)
+    source: extract.go:358
+    why: "SeedWhyFromDoc populates each declaration's one-line `Why` from its scraped"

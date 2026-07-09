@@ -38,6 +38,7 @@ const (
 	SevInfo
 )
 
+// String renders the Severity as an uppercase label ("WARNING", "INFO").
 func (s Severity) String() string {
 	switch s {
 	case SevWarning:
@@ -52,13 +53,14 @@ func (s Severity) String() string {
 // Where is a human-readable scope hint (e.g. "module", "class Foo",
 // `invariant "Three-Phase Ordering"`, `field bits`).
 type Finding struct {
-	Code     string
-	Severity Severity
-	File     string
-	Where    string
-	Message  string
+	Code     string   // The W001-W008 warning token identifying the rule that fired.
+	Severity Severity // WARNING or INFO; WarningCount counts only WARNING findings.
+	File     string   // The .lyric path passed to Lint, recorded for reporting.
+	Where    string   // Human-readable scope hint (e.g. "class Foo", `invariant "Bar"`).
+	Message  string   // Human-readable description of the issue and how to fix it.
 }
 
+// String renders a Finding as a one-line "[SEVERITY CODE] file: where: message" report.
 func (f Finding) String() string {
 	scope := f.File
 	if f.Where != "" {

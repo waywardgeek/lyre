@@ -63,6 +63,7 @@ const (
 	SevInfo
 )
 
+// String returns the uppercase name of the severity (ERROR, WARNING, INFO).
 func (s Severity) String() string {
 	switch s {
 	case SevError:
@@ -75,14 +76,16 @@ func (s Severity) String() string {
 	return "UNKNOWN"
 }
 
-// Finding is a single verification report.
+// Finding is a single verification discrepancy: its severity, the affected
+// file, the source location, and a descriptive drift message.
 type Finding struct {
-	Severity Severity
-	File     string
-	Source   string
-	Message  string
+	Severity Severity // Drift level: SevError, SevWarning, or SevInfo.
+	File     string   // The .lyric file the finding pertains to.
+	Source   string   // The source location(s) compared against, if any.
+	Message  string   // Human-readable description of the discrepancy.
 }
 
+// String renders the finding as "[SEVERITY] file ↔ source: message".
 func (f Finding) String() string {
 	loc := f.File
 	if f.Source != "" {
@@ -91,7 +94,8 @@ func (f Finding) String() string {
 	return fmt.Sprintf("[%s] %s: %s", f.Severity, loc, f.Message)
 }
 
-// VerifyResult holds all findings from a verification run.
+// VerifyResult holds all findings from a verification run; ErrorCount()
+// reports whether verification passed.
 type VerifyResult struct {
 	Findings []Finding
 }

@@ -22,10 +22,11 @@ import (
 	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
-// SeedRichPlaceholders mutates p in place to fill every empty rich-doc
-// slot with either a TODO placeholder or a cleaned-up version of the
-// legacy native-source-comment Doc field. Idempotent: existing prose is
-// never overwritten.
+// SeedRichPlaceholders mutates p in place, filling every empty rich-doc slot with a standardized placeholder or a migrated native-source comment, without ever overwriting existing prose.
+//
+// It fills each empty slot with either a TODO placeholder or a cleaned-up
+// version of the legacy native-source-comment Doc field. Idempotent:
+// existing prose is never overwritten.
 func SeedRichPlaceholders(p *extract.PackageInfo) {
 	if p == nil {
 		return

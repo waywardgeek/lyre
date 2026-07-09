@@ -1,53 +1,155 @@
 module python
   source: ["python.go"]
-  why: "TODO: one-line purpose of the python module."
+  why: "Extract, generate, update, and verify .py.lyric rich-docs for Python source by bridging Go-based Lyre to the stdlib ast module."
 
   doc "Architecture":
     """
-    TODO: explain the module's high-level structure.
+    The python module bridges the Go-based Lyre system to the Python ecosystem.
+    It shells out to python3 running an embedded script (extract_api.py, written
+    to a tempfile via //go:embed) that uses the stdlib `ast` module for precise
+    static analysis with no third-party dependencies. The pipeline is:
+
+      1. Discovery  - scan srcDir for public .py files, skipping private
+         (_*.py, __init__.py, __main__.py) and test (test_*.py, *_test.py) files.
+      2. Execution  - run extract_api.py once per file; it accepts ONE file per
+         invocation, so the Go side loops and merges.
+      3. Analysis   - the script walks the AST, honoring __all__ if present, and
+         classifies exports as classes, Protocols, functions, or type aliases.
+      4. Serialize  - metadata (verbatim signatures, field types, docstrings) is
+         emitted as a single JSON blob per file.
+      5. Integrate  - the Go code parses the JSON and merges into a
+         *extract.PackageInfo, re-adding `self` to method signatures.
+      6. Persist    - the PackageInfo drives GeneratePy (scaffold), UpdatePy
+         (smart merge), or VerifyPy (drift detection).
+
+    The public API is ExtractPy / GeneratePy / UpdatePy / VerifyPy plus the
+    verification value types VerifyResult, Finding, and Severity. It depends on
+    pkg/extract for the shared data model and pkg/cdd for the .lyric parser/writer.
+    """
+
+  doc "Design Decisions":
+    """
+    - Embedded script + tempfile (not runtime.Caller): because extract_api.py is
+      pure stdlib with no sibling-file constraint (unlike the TS extractor's
+      node_modules need), the //go:embed approach keeps the binary self-contained.
+    - Python "classes" become extract.StructInfo with IsClass=true; Python has no
+      value-vs-reference type distinction. Classes deriving from Protocol are
+      reclassified as interfaces.
+    - Signatures are opaque verbatim Python text. Field SignatureText is type-only
+      ("int", "Optional[Token]"); method/function form is "Name(self, p: T) -> R"
+      with no def keyword, no decorators, no trailing colon.
+    - Update is "source is truth" for signatures/positions and per-decl Why
+      (PreferFresh: a source docstring overwrites .lyric Why), but human-authored
+      ModuleWhy, Invariants, and Doc blocks are strictly preserved.
+    """
+
+  invariant "No third-party Python dependencies":
+    procedural
+    """
+    extract_api.py must use only the Python standard library (ast, json, os,
+    sys). This keeps the extractor lightweight and runnable in minimal
+    environments that have python3 but no pip-installed packages.
+    """
+
+  invariant "JSON is the bridge contract, one file per invocation":
+    verified-by: TestUpdatePy_MultipleFiles
+    procedural
+    """
+    The Go side and extract_api.py communicate exclusively through a JSON blob
+    on stdout. The script accepts exactly ONE source file per invocation; the Go
+    code loops over discovered files and merges the per-file JSON into a single
+    PackageInfo. Neither side parses the other's native syntax.
+    """
+
+  invariant "self is re-added to method signatures":
+    verified-by: TestExtractPy_ClassAndMethods, TestGeneratePy_RoundTripsThroughCDD
+    """
+    extract_api.py strips self/cls from method parameter lists to simplify its
+    logic. python.go re-adds `self` as the leading parameter of every method's
+    SignatureText, so .py.lyric method signatures read "Name(self, p: T) -> R",
+    keeping them consistent with other Lyre language extractors.
+    """
+
+  invariant "Protocol classes are classified as interfaces":
+    verified-by: TestExtractPy_Interface
+    """
+    A class deriving from typing.Protocol (or Protocol) is emitted as an
+    InterfaceInfo, not a StructInfo. All other classes become StructInfo with
+    IsClass=true, since Python has no value-vs-reference type distinction.
+    """
+
+  invariant "Signatures are opaque verbatim text compared modulo whitespace":
+    verified-by: TestVerifyPy_Clean, TestVerifyPy_FieldTypeMismatch
+    """
+    Signatures and field types are stored as verbatim native Python text. The
+    toolchain never parses them; verification only string-compares after
+    normalizeSig collapses all whitespace (including newlines and tabs) into
+    single spaces, so multi-line source signatures match the flattened .lyric form.
+    """
+
+  invariant "Update is source-is-truth for signatures but preserves human prose":
+    verified-by: TestUpdatePy_AlreadyUpToDate, TestUpdatePy_RefreshesWhyFromSource
+    """
+    On update, signatures and positions are refreshed from source and per-decl
+    Why uses PreferFresh (a source docstring overwrites the .lyric Why). Human-
+    authored ModuleWhy, Invariants, and hand-written Doc blocks have no Python
+    docstring equivalent and are strictly preserved. Decls present in the .lyric
+    but absent from source are NOT pruned; VerifyPy reports them as drift.
+    """
+
+  invariant "Private and test files are excluded from extraction":
+    verified-by: TestExtractPy_SkipsTestAndUnderscoreFiles
+    """
+    Discovery skips underscore-prefixed files (_*.py, which covers __init__.py
+    and __main__.py) and test files (test_*.py, *_test.py). If a module defines
+    __all__, extraction is strictly limited to the names it lists.
     """
 
   func ExtractPy(srcDir string) (*extract.PackageInfo, error)
-    source: python.go:213
-    why: "TODO: explain ExtractPy."
+    source: python.go:217
+    why: "ExtractPy parses every public .py file in srcDir and returns the public"
 
   struct Finding
-    source: python.go:79
-    why: "TODO: explain Finding."
+    source: python.go:81
+    why: "Finding is a single verification discrepancy: its severity, the affected"
     field Severity: Severity
+      doc: "Drift level: SevError, SevWarning, or SevInfo."
     field File: string
+      doc: "The .lyric file the finding pertains to."
     field Source: string
+      doc: "The source location(s) compared against, if any."
     field Message: string
+      doc: "Human-readable description of the discrepancy."
     method String() string
-      source: python.go:86
-      why: "TODO: explain Finding.String."
+      source: python.go:89
+      why: "String renders the finding as \"[SEVERITY] file ↔ source: message\"."
 
   func GeneratePy(srcDir string) (outPath, content string, err error)
-    source: python.go:373
-    why: "TODO: explain GeneratePy."
+    source: python.go:381
+    why: "GeneratePy scaffolds a fresh <dirname>.py.lyric file for srcDir. It does"
 
   struct Severity
-    why: "TODO: explain Severity."
+    why: "Severity is the enum of finding levels (SevError, SevWarning, SevInfo) attached to each Finding."
     method String() string
-      source: python.go:66
-      why: "TODO: explain Severity.String."
+      source: python.go:67
+      why: "String returns the uppercase name of the severity (ERROR, WARNING, INFO)."
 
   typedef Severity: int
     source: python.go:58
-    why: "TODO: explain Severity."
+    why: "Severity levels for verification findings."
 
   func UpdatePy(lyricPath string) (added []string, err error)
-    source: python.go:390
-    why: "TODO: explain UpdatePy."
+    source: python.go:398
+    why: "UpdatePy refreshes lyricPath: re-extracts signatures/positions from"
 
   func VerifyPy(lyricPath string) (*VerifyResult, error)
-    source: python.go:417
-    why: "TODO: explain VerifyPy."
+    source: python.go:425
+    why: "VerifyPy parses lyricPath as a .py.lyric v2 file, re-extracts the"
 
   struct VerifyResult
-    source: python.go:95
-    why: "TODO: explain VerifyResult."
+    source: python.go:99
+    why: "VerifyResult holds all findings from a verification run; ErrorCount()"
     field Findings: []Finding
     method ErrorCount() int
-      source: python.go:109
-      why: "TODO: explain VerifyResult.ErrorCount."
+      source: python.go:113
+      why: "ErrorCount returns the number of SevError findings."

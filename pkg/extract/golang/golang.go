@@ -14,7 +14,7 @@ import (
 	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
-// ExtractDir parses all Go files in a directory and returns the exported API.
+// ExtractDir parses all Go files in a directory and returns the exported API (legacy v1; the live path is ExtractGo).
 func ExtractDir(dir string) (*extract.PackageInfo, error) {
 	fset := token.NewFileSet()
 	pkgs, err := goparser.ParseDir(fset, dir, func(info os.FileInfo) bool {

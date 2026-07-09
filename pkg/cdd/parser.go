@@ -8,9 +8,10 @@ import (
 	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
-// Parse reads a `.lyric` v2 source text and returns the corresponding
-// PackageInfo. `filename` is used for error messages and (post-parse) for
-// language detection by the caller; it does not affect parsing.
+// Parse reads `.lyric` v2 source text into a PackageInfo, or returns a detailed error.
+// It normalizes CRLF, ignores comments and blank lines outside heredocs, and
+// treats native signatures as opaque rest-of-line text. `filename` is used for
+// error messages and (post-parse) language detection; it does not affect parsing.
 func Parse(text, filename string) (*extract.PackageInfo, error) {
 	// Normalize CRLF to LF (spec §2).
 	text = strings.ReplaceAll(text, "\r\n", "\n")

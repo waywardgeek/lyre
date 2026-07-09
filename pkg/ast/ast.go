@@ -24,6 +24,7 @@ type TypeExpr struct {
 	Span Span
 }
 
+// TypeExprKind discriminates the kinds of type expressions.
 type TypeExprKind int
 
 const (
@@ -46,6 +47,7 @@ var typeExprKindNames = [...]string{
 	"Func", "Channel", "Generator", "Lock", "Unit", "Ref",
 }
 
+// String returns the human-readable name of the type expression kind.
 func (k TypeExprKind) String() string {
 	if int(k) >= 0 && int(k) < len(typeExprKindNames) {
 		return typeExprKindNames[k]

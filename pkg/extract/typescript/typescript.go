@@ -50,7 +50,7 @@ type VerifyResult struct {
 	Findings []Finding
 }
 
-// Severity levels.
+// Severity classifies a verification Finding as Error, Warning, or Info.
 type Severity int
 
 const (
@@ -59,6 +59,7 @@ const (
 	SevInfo
 )
 
+// String returns the upper-case name of the severity ("ERROR", "WARNING", "INFO").
 func (s Severity) String() string {
 	switch s {
 	case SevError:
@@ -73,12 +74,13 @@ func (s Severity) String() string {
 
 // Finding is a single verification report.
 type Finding struct {
-	Severity Severity
-	File     string
-	Source   string
-	Message  string
+	Severity Severity // severity of this finding: Error, Warning, or Info
+	File     string   // the .ts.lyric file the finding pertains to
+	Source   string   // the source file(s) compared against, if any
+	Message  string   // human-readable description of the discrepancy
 }
 
+// String renders the finding as "[SEVERITY] file ↔ source: message".
 func (f Finding) String() string {
 	loc := f.File
 	if f.Source != "" {
@@ -204,7 +206,9 @@ func ensureNodeModules() error {
 
 // --- ExtractTs ------------------------------------------------------------
 
-// ExtractTs parses every non-test, non-declaration .ts file in srcDir and
+// ExtractTs extracts the public TypeScript API of srcDir into a *PackageInfo via the extract_api.js bridge.
+//
+// It parses every non-test, non-declaration .ts file in srcDir and
 // returns the public API as a *PackageInfo whose SignatureText fields are
 // populated for round-trip through the .lyric v2 format.
 //
@@ -382,8 +386,9 @@ func tsFuncSigText(name string, fn tsFuncJSON) string {
 
 // --- GenerateTs / UpdateTs / VerifyTs -------------------------------------
 
-// GenerateTs scaffolds a fresh <dirname>.ts.lyric file for srcDir. It does
-// NOT write to disk; the caller chooses what to do with the returned content
+// GenerateTs scaffolds a fresh <dirname>.ts.lyric file for srcDir, returning its path and content without writing to disk.
+//
+// It does NOT write to disk; the caller chooses what to do with the returned content
 // (the lyre CLI writes only if the target doesn't already exist).
 func GenerateTs(srcDir string) (outPath, content string, err error) {
 	p, err := ExtractTs(srcDir)
@@ -399,7 +404,9 @@ func GenerateTs(srcDir string) (outPath, content string, err error) {
 	return outPath, content, nil
 }
 
-// UpdateTs refreshes lyricPath: re-extracts signatures/positions from TS
+// UpdateTs refreshes lyricPath from source while preserving all human-authored prose, returning the list of newly added exports.
+//
+// It re-extracts signatures/positions from TS
 // source, adds new exports, preserves all human prose (ModuleWhy, Docs,
 // Invariants, per-decl Why, per-field Doc). Returns the human-readable list
 // of additions. Source list is refreshed.
@@ -428,7 +435,9 @@ func UpdateTs(lyricPath string) (added []string, err error) {
 	return added, nil
 }
 
-// VerifyTs parses lyricPath as a .ts.lyric v2 file, re-extracts the TS
+// VerifyTs compares a .ts.lyric file against freshly extracted source and reports any drift as Findings.
+//
+// It parses lyricPath as a .ts.lyric v2 file, re-extracts the TS
 // source it lives next to, and reports drift via Findings.
 func VerifyTs(lyricPath string) (*VerifyResult, error) {
 	raw, err := os.ReadFile(lyricPath)

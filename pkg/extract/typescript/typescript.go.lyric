@@ -1,0 +1,197 @@
+module typescript
+  source: ["typescript.go"]
+  why: "Extracts the public API from TypeScript source into extract.PackageInfo by bridging to the official TypeScript Compiler API via a Node.js helper."
+
+  doc "Architecture":
+    """
+    The module follows a BRIDGE pattern: a thin Go wrapper (typescript.go)
+    drives a Node.js script (extract_api.js) that uses the official
+    TypeScript Compiler API to parse each source file with full fidelity —
+    including JSX/.tsx, constructor parameter properties, complex type
+    aliases, and enums. Using the real compiler (rather than a hand-rolled
+    parser) is the whole point: it is the authoritative source of truth for
+    TypeScript syntax and type resolution.
+
+    The four public entry points mirror the Go extractor exactly:
+      - ExtractTs  — scan a directory, run the bridge per file, merge into
+        one extract.PackageInfo with canonical SignatureText fields.
+      - GenerateTs — scaffold a fresh <dir>.ts.lyric (content only; caller
+        writes it).
+      - UpdateTs   — re-extract and merge into an existing .ts.lyric,
+        adding new exports and refreshing signatures/positions while
+        preserving all human-authored prose.
+      - VerifyTs   — compare a .ts.lyric against freshly extracted source
+        and report drift as severity-tagged Findings.
+
+    The Go wrapper is "zero-config": it locates extract_api.js and
+    node_modules relative to its own package dir (runtime.Caller) and runs
+    `npm install` on first use if node_modules is missing.
+    """
+
+  doc "Data Flow":
+    """
+    Discovery → Environment setup → per-file bridge call → TypeScript
+    parsing → metadata extraction → JSON emit → Go decode → model merge →
+    CDD persistence.
+
+    1. scanTsFiles selects non-test, non-declaration, non-underscore .ts/.tsx
+       files.
+    2. runExtractScript ensures node_modules, sets NODE_PATH, and execs
+       `node extract_api.js <file>`.
+    3. extract_api.js walks the AST for exported classes, interfaces,
+       functions, type aliases, and enums; extracts signatures, JSDoc, and
+       locations; and prints one JSON object to stdout.
+    4. The Go side decodes that JSON into tsPackageJSON and folds it into a
+       shared extract.PackageInfo, normalizing signatures to the canonical
+       form `Name(p1: t1, p2: t2): retType`.
+    5. pkg/cdd serializes the PackageInfo to the .ts.lyric artifact.
+    """
+
+  doc "Dependencies":
+    """
+    - pkg/extract: the shared language-agnostic data model (PackageInfo,
+      StructInfo, InterfaceInfo, FuncInfo, TypeDefInfo).
+    - pkg/cdd: the parser/writer for the .lyric DSL.
+    - TypeScript Compiler API: the authoritative TypeScript parser,
+      invoked out-of-process through extract_api.js.
+    - Node.js 18+ / npm: the runtime and first-time dependency installer.
+    """
+
+  invariant "Bridge to the official TypeScript Compiler API":
+    verified-by: TestExtractTs_ClassAndMethods, TestExtractTs_Interface, TestExtractTs_TypedefAndFunction
+    """
+    All TypeScript parsing and type resolution is delegated to the official
+    TypeScript Compiler API, invoked out-of-process via extract_api.js. The
+    Go side never parses TypeScript syntax itself. This guarantees fidelity
+    for JSX/.tsx, constructor parameter properties, complex type aliases,
+    and enums, and keeps the compiler as the single source of truth.
+    """
+
+  invariant "Zero-config auto-install of Node dependencies":
+    verified-by: TestExtractTs_ClassAndMethods
+    """
+    The wrapper must work on a fresh checkout with no manual setup. If the
+    package's node_modules directory is missing, runExtractScript runs
+    `npm install` exactly once (ensureNodeModules) before executing the
+    script, and sets NODE_PATH so `require('typescript')` resolves the
+    vendored module. package.json / package-lock.json are committed;
+    node_modules is not.
+    """
+
+  invariant "JSON is the Go↔Node contract":
+    verified-by: TestExtractTs_ClassAndMethods, TestGenerateTs_RoundTripsThroughCDD
+    """
+    The sole interface between the Go wrapper and extract_api.js is a single
+    JSON object printed to stdout and decoded into tsPackageJSON. No other
+    channel (files, exit codes carrying data, stderr parsing for results) is
+    used to transfer extracted API information.
+    """
+
+  invariant "Signatures are normalized before comparison":
+    verified-by: TestExtractTs_TypedefAndFunction, TestVerifyTs_Clean
+    """
+    Function/method signatures and type definitions are compared modulo
+    whitespace: normalizeSig trims and collapses every run of ASCII
+    whitespace (spaces, tabs, newlines, carriage returns) to a single space
+    before byte comparison. A multi-line type literal in source therefore
+    matches its flattened single-line .lyric form, so pure formatting
+    changes never produce spurious verify failures. Both sides (the
+    extractor and pkg/cdd's writer) must agree on this flattening.
+    """
+
+  invariant "Signatures are opaque verbatim native text":
+    procedural
+    """
+    SignatureText (field types, method signatures, function signatures) and
+    typedef Underlying are stored as verbatim TypeScript text and only ever
+    string-compared modulo whitespace. The toolchain never parses, rewrites,
+    or interprets their internal structure.
+    """
+
+  invariant "Extractors are signatures-only; docs live in the .lyric":
+    procedural
+    """
+    CDD documentation lives in the .ts.lyric file ONLY, never as `// why:`
+    or `/** doc */` directives smuggled into TypeScript source. The
+    extractor surfaces signatures, locations, and (for seeding) plain doc
+    comments — it does not read or honor in-source CDD directives. The
+    legacy //ldd:source / //ldd:why / index-marker layout is gone.
+    """
+
+  invariant "Only exported, non-test, non-generated declarations are extracted":
+    verified-by: TestExtractTs_SkipsTestAndSpecFiles, TestExtractTs_SkipsUnexportedAndUnderscored
+    """
+    scanTsFiles admits only .ts/.tsx files and skips test (.test/.spec),
+    declaration (.d.ts), generated (.ts.lyric/.tsx.lyric), and
+    underscore-prefixed files. extract_api.js keeps only exported symbols
+    (falling back to top-level public symbols only when a file exports
+    nothing). Unexported and underscore-prefixed declarations never appear.
+    """
+
+  invariant "Update preserves all human-authored prose":
+    verified-by: TestUpdateTs_PreservesHumanProse, TestUpdateTs_RefreshesPositionsAndSource
+    """
+    UpdateTs re-extracts signatures and source positions and adds newly
+    discovered exports, but mergeFreshIntoExisting must preserve every piece
+    of human-authored prose already in the file: ModuleWhy, module Docs,
+    Invariants, per-decl Why, and per-field Doc. Signatures/positions are
+    refreshed from source; prose is never overwritten by extraction.
+    """
+
+  invariant "Undocumented exports and signature drift are verify errors":
+    verified-by: TestVerifyTs_FieldTypeMismatch, TestVerifyTs_MissingFunction, TestVerifyTs_UndocumentedExport
+    """
+    VerifyTs treats a signature/type mismatch, a declaration present in the
+    .lyric but missing from source, and an exported symbol not documented in
+    the .lyric all as SevError findings, so drift between source and
+    documentation fails verification.
+    """
+
+  func ExtractTs(srcDir string) (*extract.PackageInfo, error)
+    source: typescript.go:217
+    why: "ExtractTs extracts the public TypeScript API of srcDir into a *PackageInfo via the extract_api.js bridge."
+
+  struct Finding
+    source: typescript.go:76
+    why: "Finding is a single verification report."
+    field Severity: Severity
+      doc: "severity of this finding: Error, Warning, or Info"
+    field File: string
+      doc: "the .ts.lyric file the finding pertains to"
+    field Source: string
+      doc: "the source file(s) compared against, if any"
+    field Message: string
+      doc: "human-readable description of the discrepancy"
+    method String() string
+      source: typescript.go:84
+      why: "String renders the finding as \"[SEVERITY] file ↔ source: message\"."
+
+  func GenerateTs(srcDir string) (outPath, content string, err error)
+    source: typescript.go:393
+    why: "GenerateTs scaffolds a fresh <dirname>.ts.lyric file for srcDir, returning its path and content without writing to disk."
+
+  struct Severity
+    why: "Severity classifies a verification Finding as Error, Warning, or Info."
+    method String() string
+      source: typescript.go:63
+      why: "String returns the upper-case name of the severity (\"ERROR\", \"WARNING\", \"INFO\")."
+
+  typedef Severity: int
+    source: typescript.go:54
+    why: "Severity classifies a verification Finding as Error, Warning, or Info."
+
+  func UpdateTs(lyricPath string) (added []string, err error)
+    source: typescript.go:413
+    why: "UpdateTs refreshes lyricPath from source while preserving all human-authored prose, returning the list of newly added exports."
+
+  struct VerifyResult
+    source: typescript.go:49
+    why: "VerifyResult holds all findings from a verification run."
+    field Findings: []Finding
+    method ErrorCount() int
+      source: typescript.go:102
+      why: "ErrorCount returns the number of SevError findings."
+
+  func VerifyTs(lyricPath string) (*VerifyResult, error)
+    source: typescript.go:442
+    why: "VerifyTs compares a .ts.lyric file against freshly extracted source and reports any drift as Findings."

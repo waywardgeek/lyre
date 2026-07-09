@@ -52,6 +52,7 @@ const (
 	SevInfo
 )
 
+// String renders the Severity as an uppercase label (ERROR/WARNING/INFO).
 func (s Severity) String() string {
 	switch s {
 	case SevError:
@@ -66,12 +67,13 @@ func (s Severity) String() string {
 
 // Finding is a single verification report.
 type Finding struct {
-	Severity Severity
-	File     string
-	Source   string
-	Message  string
+	Severity Severity // ERROR, WARNING, or INFO classification of this finding.
+	File     string   // The .ly.lyric file the finding pertains to.
+	Source   string   // The Lyric source file(s) compared against, if any.
+	Message  string   // Human-readable description of the drift or issue.
 }
 
+// String renders the Finding as a human-readable "[SEV] loc: message" line.
 func (f Finding) String() string {
 	loc := f.File
 	if f.Source != "" {
@@ -204,7 +206,9 @@ func runExtract(paths ...string) (*lyPackageJSON, error) {
 
 // --- ExtractLy ------------------------------------------------------------
 
-// ExtractLy parses every non-test .ly file in srcDir and returns the public
+// ExtractLy extracts the public Lyric API of srcDir by bridging to the external extract_api binary.
+//
+// It parses every non-test .ly file in srcDir and returns the public
 // API as a *PackageInfo whose SignatureText fields are populated for round-
 // trip through the .lyric v2 format.
 //
@@ -370,8 +374,9 @@ func lyFuncSigText(name string, fn lyFuncJSON, isMethod bool) string {
 
 // --- GenerateLy / UpdateLy / VerifyLy -------------------------------------
 
-// GenerateLy scaffolds a fresh <dirname>.ly.lyric file for srcDir. It does
-// NOT write to disk; the caller chooses what to do with the returned
+// GenerateLy scaffolds the content for a fresh <dirname>.ly.lyric file from srcDir's current source.
+//
+// It does NOT write to disk; the caller chooses what to do with the returned
 // content (the lyre CLI writes only if the target doesn't already exist).
 func GenerateLy(srcDir string) (outPath, content string, err error) {
 	p, err := ExtractLy(srcDir)
@@ -387,7 +392,9 @@ func GenerateLy(srcDir string) (outPath, content string, err error) {
 	return outPath, content, nil
 }
 
-// UpdateLy refreshes lyricPath: re-extracts signatures/positions from Lyric
+// UpdateLy refreshes an existing .ly.lyric in place, re-extracting source while preserving all human prose.
+//
+// It re-extracts signatures/positions from Lyric
 // source, adds new exports, preserves all human prose (ModuleWhy, Docs,
 // Invariants, per-decl Why, per-field Doc). Returns the human-readable list
 // of additions. Source list is refreshed.
@@ -416,7 +423,9 @@ func UpdateLy(lyricPath string) (added []string, err error) {
 	return added, nil
 }
 
-// VerifyLy parses lyricPath as a .ly.lyric v2 file, re-extracts the Lyric
+// VerifyLy compares a .ly.lyric file against its Lyric source and reports drift via Findings.
+//
+// It parses lyricPath as a .ly.lyric v2 file, re-extracts the Lyric
 // source it lives next to, and reports drift via Findings.
 func VerifyLy(lyricPath string) (*VerifyResult, error) {
 	raw, err := os.ReadFile(lyricPath)

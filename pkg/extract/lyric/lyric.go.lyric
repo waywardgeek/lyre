@@ -1,0 +1,186 @@
+module lyric
+  source: ["lyric.go"]
+  why: "Bridges Lyric .ly source to the Lyre rich-doc (.ly.lyric) format by executing the external extract_api compiler binary."
+
+  doc "Architecture":
+    """
+    The lyric module is a language-specific extractor for the Lyric
+    programming language. Unlike the Go extractor (in-process AST parsing),
+    it follows a BRIDGE pattern: it locates and executes an external
+    extract_api binary (part of the Lyric compiler toolchain) to parse and
+    type-analyze .ly source, then translates the resulting JSON into the
+    system-wide extract.PackageInfo model.
+
+    It owns the full lifecycle of Lyric documentation via four entry points
+    consumed by the lyre CLI:
+      - ExtractLy  — discover exported structs, classes, interfaces,
+                     functions, and typedefs.
+      - GenerateLy — scaffold initial .ly.lyric content.
+      - UpdateLy   — refresh an existing .ly.lyric while preserving prose.
+      - VerifyLy   — detect drift between source and documented API.
+
+    The module implements no formal Go interface; the extract package uses a
+    functional entry-point pattern, so these four exported functions form the
+    de-facto language-provider contract.
+    """
+
+  doc "Data Flow":
+    """
+    A typical extraction flows through five stages:
+      1. Discovery — ExtractLy scans srcDir for non-test .ly files,
+         excluding test_*.ly and *_test.ly (and .ly.lyric, which end in
+         .lyric not .ly).
+      2. External analysis — findExtractBinary locates extract_api and
+         runExtract executes it against the discovered source paths.
+      3. JSON parsing — the binary emits one JSON blob, unmarshaled into
+         internal lyPackageJSON structures mirroring the extract_api schema.
+      4. Normalization — mergeJSONInto/funcInfoFromJSON convert the raw JSON
+         into extract.PackageInfo with canonical SignatureText fields.
+      5. Integration — the resulting PackageInfo is written or merged by
+         pkg/cdd into the .ly.lyric file.
+    """
+
+  doc "Binary Bridging":
+    """
+    findExtractBinary locates extract_api in a fixed search order:
+      1. $LYRIC_HOME/tools/extract_api
+      2. the tools/ dir alongside the `lyric` binary found on $PATH
+      3. ~/projects/lyric/tools/extract_api
+    If none is found it returns a descriptive error advising the caller to
+    set LYRIC_HOME or build the tool. runExtract handles execution and JSON
+    unmarshaling, surfacing extract_api stderr on failure.
+
+    KNOWN LIMITATION: the extract_api JSON does not yet emit doc comments, so
+    per-decl `why:` for .ly declarations is not populated from Lyric source.
+    That is a planned future Lyric-language feature and is out of scope here.
+    """
+
+  doc "Signature Normalization":
+    """
+    Signatures are captured as opaque strings but normalized to a canonical
+    Lyric form so minor formatting differences never trigger false drift:
+      - Methods always include `self` as the leading parameter, matching the
+        Lyric source convention (Phase 3c follows legacy buildLyFuncSig).
+      - Functions are formatted as "Name(params) -> R"; multiple returns are
+        parenthesized as "-> (R1, R2)"; a void/empty return omits the clause.
+      - normalizeSig trims and collapses runs of ASCII whitespace to a single
+        space before byte-comparison (spec §7).
+    Self mutability (`mut self`) is NOT recovered — the extract_api JSON
+    drops it, so a source `scale(mut self, ...)` is documented as
+    `scale(self, ...)`, consistent with the legacy Go/Phase-3a behavior.
+    """
+
+  doc "Dependencies":
+    """
+    - pkg/extract — provides the core PackageInfo data structures and shared
+      helpers (NewPackageInfo, SanitizeModuleName, NewStructInfo, ...).
+    - pkg/cdd     — parses and writes the .lyric DSL (cdd.Parse / cdd.Write).
+    - Lyric toolchain — requires the external extract_api binary at runtime.
+    """
+
+  invariant "Extraction bridges to an external binary":
+    procedural
+    """
+    The module never parses Lyric source itself. All parsing and type
+    analysis are delegated to the external extract_api binary located by
+    findExtractBinary; the module only translates its JSON output. When the
+    binary is absent, extraction returns a descriptive error (and the test
+    suite skips via requireExtractor).
+    """
+
+  invariant "JSON is the sole contract with extract_api":
+    verified-by: TestExtractLy_ClassAndMethods, TestExtractLy_TypedefAndFunction
+    """
+    extract_api communicates exclusively through a single JSON blob on
+    stdout, unmarshaled into the internal lyPackageJSON schema (structs,
+    interfaces, functions, typedefs). All downstream PackageInfo is derived
+    from this JSON; no other channel (side files, stderr parsing) carries API
+    data.
+    """
+
+  invariant "Methods always include self as the leading parameter":
+    verified-by: TestExtractLy_ClassAndMethods, TestExtractLy_Interface, TestGenerateLy_OutputFormat
+    """
+    Method and interface-method SignatureText always begins with an explicit
+    `self` parameter (e.g. "area(self) -> f64"), matching the Lyric source
+    convention. Receiver-side mutability (`mut self`) is NOT recovered
+    because the extract_api JSON drops it, so "scale(mut self, ...)" is
+    documented as "scale(self, ...)".
+    """
+
+  invariant "Signatures are opaque, whitespace-normalized strings":
+    verified-by: TestVerifyLy_Clean, TestVerifyLy_FieldTypeMismatch
+    """
+    Field types and function/method signatures are stored as verbatim Lyric
+    text and only string-compared modulo whitespace: normalizeSig trims and
+    collapses runs of ASCII whitespace to a single space (spec §7). The
+    toolchain never re-parses these strings, so minor source formatting
+    differences do not trigger verification drift.
+    """
+
+  invariant "Test files are excluded from extraction":
+    verified-by: TestExtractLy_SkipsTestFiles
+    """
+    scanLyFiles considers only files ending in `.ly` and skips any beginning
+    with `test_` or ending in `_test.ly`. Files ending in `.ly.lyric` are the
+    CDD artifact, not source, and are excluded by the `.ly` suffix check.
+    """
+
+  invariant "Update preserves human-authored prose":
+    verified-by: TestUpdateLy_PreservesHumanProse, TestUpdateLy_RefreshesPositionsAndSource
+    """
+    mergeFreshIntoExisting refreshes signatures, positions and the module
+    source list from fresh extraction, and adds newly discovered exports, but
+    never overwrites human prose (ModuleWhy, Docs, per-decl Why, per-field
+    Doc). Decls present in the .lyric but absent from source are NOT pruned;
+    VerifyLy reports them as drift instead.
+    """
+
+  func ExtractLy(srcDir string) (*extract.PackageInfo, error)
+    source: lyric.go:217
+    why: "ExtractLy extracts the public Lyric API of srcDir by bridging to the external extract_api binary."
+
+  struct Finding
+    source: lyric.go:69
+    why: "Finding is a single verification report."
+    field Severity: Severity
+      doc: "ERROR, WARNING, or INFO classification of this finding."
+    field File: string
+      doc: "The .ly.lyric file the finding pertains to."
+    field Source: string
+      doc: "The Lyric source file(s) compared against, if any."
+    field Message: string
+      doc: "Human-readable description of the drift or issue."
+    method String() string
+      source: lyric.go:77
+      why: "String renders the Finding as a human-readable \"[SEV] loc: message\" line."
+
+  func GenerateLy(srcDir string) (outPath, content string, err error)
+    source: lyric.go:381
+    why: "GenerateLy scaffolds the content for a fresh <dirname>.ly.lyric file from srcDir's current source."
+
+  struct Severity
+    why: "Method group for the Severity int type; carries its Stringer implementation."
+    method String() string
+      source: lyric.go:56
+      why: "String renders the Severity as an uppercase label (ERROR/WARNING/INFO)."
+
+  typedef Severity: int
+    source: lyric.go:47
+    why: "Severity levels for verification findings."
+
+  func UpdateLy(lyricPath string) (added []string, err error)
+    source: lyric.go:401
+    why: "UpdateLy refreshes an existing .ly.lyric in place, re-extracting source while preserving all human prose."
+
+  func VerifyLy(lyricPath string) (*VerifyResult, error)
+    source: lyric.go:430
+    why: "VerifyLy compares a .ly.lyric file against its Lyric source and reports drift via Findings."
+
+  struct VerifyResult
+    source: lyric.go:86
+    why: "VerifyResult holds all findings from a verification run."
+    field Findings: []Finding
+    method ErrorCount() int
+      source: lyric.go:100
+      why: "ErrorCount returns the number of SevError findings."

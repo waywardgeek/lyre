@@ -13,7 +13,8 @@ package extract
 
 import "strings"
 
-// PackageInfo is the language-agnostic representation of a package's exported API.
+// PackageInfo is the language-agnostic representation of a package's exported
+// API — the "narrow waist" every extractor produces and every consumer reads.
 type PackageInfo struct {
 	Name       string
 	Structs    map[string]*StructInfo
@@ -75,8 +76,8 @@ type InterfaceInfo struct {
 	Line    int
 
 	// Rich-doc additions (Phase 1).
-	Why    string
-	Source string
+	Why    string // per-decl "why" prose
+	Source string // canonical "file:line" reference; refreshed by `lyre update`
 }
 
 // FuncInfo describes a function or method signature.
@@ -97,7 +98,7 @@ type FuncInfo struct {
 	Line          int
 
 	// Rich-doc additions (Phase 1).
-	Why    string
+	Why    string // per-decl "why" prose
 	Source string
 }
 
@@ -108,7 +109,7 @@ type ParamInfo struct {
 	IsMut bool
 }
 
-// TypeDefInfo describes a type alias or newtype.
+// TypeDefInfo describes a type alias or newtype and its underlying type.
 type TypeDefInfo struct {
 	Underlying string // the underlying type string, if simple
 	Doc        string
@@ -116,7 +117,7 @@ type TypeDefInfo struct {
 	Line       int
 
 	// Rich-doc additions (Phase 1).
-	Why    string
+	Why    string // per-decl "why" prose
 	Source string // canonical "file:line" reference; round-trips through .lyric
 }
 
