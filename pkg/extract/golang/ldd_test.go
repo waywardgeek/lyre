@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/waywardgeek/lyre/pkg/extract/golang"
 	"github.com/waywardgeek/lyre/pkg/cdd"
+	"github.com/waywardgeek/lyre/pkg/extract/golang"
 )
 
 // sampleSource is a simple Go package used as test input.
@@ -355,7 +355,11 @@ func TestUpdateGo_AlreadyUpToDate(t *testing.T) {
 	}
 }
 
-func TestUpdateGo_PreservesHumanProse(t *testing.T) {
+// TestUpdateGo_RefreshesWhyFromSource verifies the source-of-truth policy:
+// module-level prose (human/design-curated) is preserved, but per-decl why: is
+// refreshed from the Go doc comment (source wins), while a field with no source
+// comment keeps its hand-written doc.
+func TestUpdateGo_RefreshesWhyFromSource(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
 	outPath := generateAndWrite(t, dir)
 
@@ -364,17 +368,13 @@ func TestUpdateGo_PreservesHumanProse(t *testing.T) {
 	annotated := strings.Replace(string(raw),
 		"module shapes\n",
 		"module shapes\n  why: \"geometry primitives\"\n", 1)
-	annotated = strings.Replace(annotated,
-		"struct Circle\n    source:",
-		"struct Circle\n    source:", 1)
-	annotated = strings.Replace(annotated,
-		"struct Circle\n",
-		"struct Circle\n", 1)
-	// Inject a per-decl why on Circle: find the source: line under struct Circle and append a why:.
+	// Inject a (stale) hand-written per-decl why on Circle. Circle HAS a source
+	// doc comment ("Circle is a round shape."), so update must overwrite this.
 	annotated = strings.Replace(annotated,
 		"struct Circle\n    source:",
 		"struct Circle\n    why: \"a flat round geometric primitive\"\n    source:", 1)
-	// Add per-field doc on Radius.
+	// Add per-field doc on Radius. Radius has NO source comment, so it must be
+	// preserved.
 	annotated = strings.Replace(annotated,
 		"field Radius: float64\n",
 		"field Radius: float64\n      doc: \"in scene units\"\n", 1)
@@ -394,14 +394,18 @@ func TestUpdateGo_PreservesHumanProse(t *testing.T) {
 	updated, _ := os.ReadFile(outPath)
 	updatedStr := string(updated)
 	for _, want := range []string{
-		`why: "geometry primitives"`,
-		`why: "a flat round geometric primitive"`,
-		`doc: "in scene units"`,
-		`func Clone(c *Circle) *Circle`,
+		`why: "geometry primitives"`,      // module why: human-curated, preserved
+		`why: "Circle is a round shape."`, // per-decl why: refreshed from source
+		`doc: "in scene units"`,           // field doc: no source comment, preserved
+		`func Clone(c *Circle) *Circle`,   // new symbol added
 	} {
 		if !strings.Contains(updatedStr, want) {
 			t.Errorf("update lost or failed to add %q\n--- file ---\n%s", want, updatedStr)
 		}
+	}
+	// The stale hand-written Circle why must be overwritten by the source comment.
+	if strings.Contains(updatedStr, "a flat round geometric primitive") {
+		t.Errorf("stale hand-written Circle why should be overwritten by source comment\n--- file ---\n%s", updatedStr)
 	}
 }
 

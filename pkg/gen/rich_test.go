@@ -175,21 +175,3 @@ func TestSeedRich_LintContract_HeavyClass(t *testing.T) {
 		t.Errorf("expected W003 (heavy class, no invariants) after seeding")
 	}
 }
-
-func TestCleanDocLine(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"", ""},
-		{"// hello world", "hello world"},
-		{"// first line\n// second", "first line"},
-		{"\n\n// after blanks", "after blanks"},
-		{"# python style", "python style"},
-		{"/** javadoc */", "javadoc */"}, // /** stripped, */ remains for now
-		{"  collapse   internal  whitespace  ", "collapse internal whitespace"},
-	}
-	for _, tc := range cases {
-		got := cleanDocLine(tc.in)
-		if got != tc.want {
-			t.Errorf("cleanDocLine(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}

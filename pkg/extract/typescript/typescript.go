@@ -31,8 +31,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/cdd"
+	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
 // packageDir is the on-disk directory of this Go package, used to locate
@@ -233,6 +233,7 @@ func ExtractTs(srcDir string) (*extract.PackageInfo, error) {
 		}
 		mergeJSONInto(p, raw)
 	}
+	extract.SeedWhyFromDoc(p)
 	return p, nil
 }
 
@@ -318,7 +319,7 @@ func mergeJSONInto(p *extract.PackageInfo, raw *tsPackageJSON) {
 			ii.Methods[fname] = &extract.FuncInfo{
 				SignatureText: fmt.Sprintf("%s: %s", fname, ftype),
 				File:          iface.File,
-				Line:           iface.Line,
+				Line:          iface.Line,
 			}
 			if iface.File != "" && iface.Line > 0 {
 				ii.Methods[fname].Source = fmt.Sprintf("%s:%d", iface.File, iface.Line)
@@ -477,6 +478,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 			continue
 		}
 		es.File, es.Line, es.Source = fs.File, fs.Line, fs.Source
+		es.Why = extract.PreferFresh(es.Why, fs.Why)
 		preservedDoc := map[string]string{}
 		for _, f := range es.Fields {
 			if f.Doc != "" {
@@ -486,8 +488,10 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		es.Fields = es.Fields[:0]
 		for _, f := range fs.Fields {
 			ff := f
-			if doc, ok := preservedDoc[f.Name]; ok {
-				ff.Doc = doc
+			if ff.Doc == "" {
+				if doc, ok := preservedDoc[f.Name]; ok {
+					ff.Doc = doc
+				}
 			}
 			es.Fields = append(es.Fields, ff)
 		}
@@ -495,6 +499,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 			if em, ok := es.Methods[mn]; ok {
 				em.SignatureText = fm.SignatureText
 				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+				em.Why = extract.PreferFresh(em.Why, fm.Why)
 			} else {
 				es.Methods[mn] = fm
 				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
@@ -511,10 +516,12 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 			continue
 		}
 		ei.File, ei.Line, ei.Source = fi.File, fi.Line, fi.Source
+		ei.Why = extract.PreferFresh(ei.Why, fi.Why)
 		for mn, fm := range fi.Methods {
 			if em, ok := ei.Methods[mn]; ok {
 				em.SignatureText = fm.SignatureText
 				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+				em.Why = extract.PreferFresh(em.Why, fm.Why)
 			} else {
 				ei.Methods[mn] = fm
 				added = append(added, fmt.Sprintf("interface %s.%s", name, mn))
@@ -532,6 +539,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		}
 		ef.SignatureText = ff.SignatureText
 		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
+		ef.Why = extract.PreferFresh(ef.Why, ff.Why)
 	}
 
 	for _, name := range sortedKeys(fresh.TypeDefs) {
@@ -544,6 +552,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		}
 		et.Underlying = ft.Underlying
 		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
+		et.Why = extract.PreferFresh(et.Why, ft.Why)
 	}
 
 	sort.Strings(added)

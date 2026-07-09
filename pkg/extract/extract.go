@@ -11,6 +11,8 @@
 // for fields; FuncInfo for methods/functions still holds structured params).
 package extract
 
+import "strings"
+
 // PackageInfo is the language-agnostic representation of a package's exported API.
 type PackageInfo struct {
 	Name       string
@@ -20,10 +22,10 @@ type PackageInfo struct {
 	TypeDefs   map[string]*TypeDefInfo
 
 	// Rich-doc additions (Phase 1).
-	ModuleWhy    string       // module-level "why" prose
-	ModuleSource []string     // module-level `source: ["a.go", "b.go"]` file list
-	Docs         []DocBlock   // named doc "..." blocks (e.g. "Architecture")
-	Invariants   []Invariant  // named invariant "..." blocks
+	ModuleWhy    string      // module-level "why" prose
+	ModuleSource []string    // module-level `source: ["a.go", "b.go"]` file list
+	Docs         []DocBlock  // named doc "..." blocks (e.g. "Architecture")
+	Invariants   []Invariant // named invariant "..." blocks
 }
 
 // DocBlock is a titled prose section (e.g. doc "Architecture":).
@@ -292,5 +294,98 @@ func NewStructInfo() *StructInfo {
 func NewInterfaceInfo() *InterfaceInfo {
 	return &InterfaceInfo{
 		Methods: make(map[string]*FuncInfo),
+	}
+}
+
+// CleanDocLine extracts a one-line summary from a multi-line native-source
+// doc comment. It picks the first non-empty line, strips common comment
+// markers (`// `, `# `, `* `, `/** `), trims whitespace, and collapses
+// embedded whitespace. Returns "" if no usable content is found.
+//
+// The one-line reduction is deliberate: the `.lyric` `why:` slot is a single
+// quoted string (the writer does not escape newlines), and the file is meant
+// to be a compact review aid — the full prose lives in the source comment,
+// which is the source of truth.
+func CleanDocLine(doc string) string {
+	for _, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimSpace(raw)
+		// Strip leading comment markers.
+		for {
+			trimmed := line
+			for _, prefix := range []string{"// ", "//", "# ", "#", "/**", "/*", "*/", "* ", "*"} {
+				if strings.HasPrefix(trimmed, prefix) {
+					trimmed = strings.TrimSpace(trimmed[len(prefix):])
+				}
+			}
+			if trimmed == line {
+				break
+			}
+			line = trimmed
+		}
+		if line == "" {
+			continue
+		}
+		// Collapse internal whitespace.
+		return strings.Join(strings.Fields(line), " ")
+	}
+	return ""
+}
+
+// PreferFresh returns fresh when it is non-empty, else keeps existing. Source
+// is the source of truth for per-decl prose, so `lyre update`'s merge uses this
+// to refresh `why:` from the current source comment — while still preserving
+// hand-written prose on decls that have no source comment (fresh == "").
+func PreferFresh(existing, fresh string) string {
+	if strings.TrimSpace(fresh) != "" {
+		return fresh
+	}
+	return existing
+}
+
+// SeedWhyFromDoc populates each declaration's one-line `Why` from its scraped
+// native-source `Doc` comment, and collapses per-field `Doc` to a single line.
+// It is called at the end of every language extractor so that the source code
+// is the source of truth for per-decl `why:` prose: teammates read the native
+// `.go`/`.py`/`.ts` comments; the `.lyric` mirrors their first line.
+//
+// It only fills empty `Why` slots (never clobbers prose already present on the
+// passed-in PackageInfo). Freshly extracted PackageInfos always have empty
+// `Why`, so this seeds from the source comment; `lyre update` reconciles
+// against an existing file separately (see mergeFreshIntoExisting), where the
+// fresh source comment wins. Module-level `why`, `doc` blocks, and invariants
+// are NOT touched here — those stay human/design-doc curated.
+func SeedWhyFromDoc(p *PackageInfo) {
+	if p == nil {
+		return
+	}
+	seed := func(why *string, doc string) {
+		if strings.TrimSpace(*why) == "" {
+			if line := CleanDocLine(doc); line != "" {
+				*why = line
+			}
+		}
+	}
+	for _, s := range p.Structs {
+		seed(&s.Why, s.Doc)
+		for _, m := range s.Methods {
+			seed(&m.Why, m.Doc)
+		}
+		for i := range s.Fields {
+			if s.Fields[i].Doc != "" {
+				s.Fields[i].Doc = CleanDocLine(s.Fields[i].Doc)
+			}
+		}
+	}
+	for _, ifc := range p.Interfaces {
+		seed(&ifc.Why, ifc.Doc)
+		for _, m := range ifc.Methods {
+			seed(&m.Why, m.Doc)
+		}
+	}
+	for _, fn := range p.Functions {
+		seed(&fn.Why, fn.Doc)
+	}
+	for _, td := range p.TypeDefs {
+		seed(&td.Why, td.Doc)
 	}
 }

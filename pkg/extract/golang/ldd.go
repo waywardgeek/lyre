@@ -27,15 +27,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/cdd"
+	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
-// docText returns the trimmed text of primary, falling back to fallback. Kept
-// only for the legacy ExtractDir/ExtractFiles paths in golang.go which still
-// populate the extractor-internal StructInfo.Doc / FuncInfo.Doc fields. These
-// values do NOT round-trip through .lyric and are not consulted by GenerateGo
-// / UpdateGo / VerifyGo — CDD prose lives in the .lyric file only.
+// docText returns the trimmed text of primary, falling back to fallback.
+// Populates the per-decl StructInfo.Doc / FuncInfo.Doc / etc. fields from the
+// Go doc comment. These raw comments are reduced to a one-line `why:` by
+// extract.SeedWhyFromDoc — the Go source comment is the source of truth for
+// CDD per-decl prose.
 func docText(primary, fallback *ast.CommentGroup) string {
 	cg := primary
 	if cg == nil {
@@ -84,6 +84,7 @@ func ExtractGo(srcDir string) (*extract.PackageInfo, error) {
 	for _, f := range astFiles {
 		extractGoFile(fset, f, p)
 	}
+	extract.SeedWhyFromDoc(p)
 	return p, nil
 }
 
@@ -103,6 +104,7 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 				case *ast.StructType:
 					si := extract.NewStructInfo()
 					si.File, si.Line, si.Source = fb, pos.Line, src
+					si.Doc = docText(ts.Doc, d.Doc)
 					if t.Fields != nil {
 						for _, f := range t.Fields.List {
 							typ := TypeString(f.Type)
@@ -113,11 +115,19 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 								si.Fields = append(si.Fields, extract.FieldInfo{Name: typ})
 								continue
 							}
+							// For fields the precise per-field doc is the trailing
+							// line comment (`X int // does Y`); a leading comment
+							// is often a section header shared by a group of
+							// fields, so prefer f.Comment over f.Doc.
+							fdoc := docText(f.Comment, f.Doc)
 							for _, name := range f.Names {
 								if !IsExported(name.Name) {
 									continue
 								}
 								si.SetField(name.Name, typ)
+								if fdoc != "" {
+									si.SetFieldDoc(name.Name, fdoc)
+								}
 							}
 						}
 					}
@@ -126,12 +136,14 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 				case *ast.InterfaceType:
 					ii := extract.NewInterfaceInfo()
 					ii.File, ii.Line, ii.Source = fb, pos.Line, src
+					ii.Doc = docText(ts.Doc, d.Doc)
 					if t.Methods != nil {
 						for _, m := range t.Methods.List {
 							ft, ok := m.Type.(*ast.FuncType)
 							if !ok {
 								continue
 							}
+							mdoc := docText(m.Doc, m.Comment)
 							for _, name := range m.Names {
 								if !IsExported(name.Name) {
 									continue
@@ -140,6 +152,7 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 								mfb := filepath.Base(mp.Filename)
 								ii.Methods[name.Name] = &extract.FuncInfo{
 									SignatureText: goFuncSigText(name.Name, ft),
+									Doc:           mdoc,
 									File:          mfb,
 									Line:          mp.Line,
 									Source:        fmt.Sprintf("%s:%d", mfb, mp.Line),
@@ -152,6 +165,7 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 				default:
 					p.TypeDefs[ts.Name.Name] = &extract.TypeDefInfo{
 						Underlying: TypeString(ts.Type),
+						Doc:        docText(ts.Doc, d.Doc),
 						File:       fb,
 						Line:       pos.Line,
 						Source:     src,
@@ -168,6 +182,7 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 			src := fmt.Sprintf("%s:%d", fb, pos.Line)
 			fi := &extract.FuncInfo{
 				SignatureText: goFuncSigText(d.Name.Name, d.Type),
+				Doc:           docText(d.Doc, nil),
 				File:          fb,
 				Line:          pos.Line,
 				Source:        src,
@@ -292,8 +307,11 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		}
 		// Refresh positions + source ref.
 		es.File, es.Line, es.Source = fs.File, fs.Line, fs.Source
-		// Refresh field signatures in source order from fresh; preserve
-		// per-field Doc from existing where the field still exists.
+		// Refresh per-decl why from the current source comment (source wins).
+		es.Why = extract.PreferFresh(es.Why, fs.Why)
+		// Refresh field signatures in source order from fresh. Field docs come
+		// from the source comment (source wins); fall back to the existing
+		// per-field doc only when the source has none.
 		preservedDoc := map[string]string{}
 		for _, f := range es.Fields {
 			if f.Doc != "" {
@@ -303,17 +321,20 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		es.Fields = es.Fields[:0]
 		for _, f := range fs.Fields {
 			ff := f
-			if doc, ok := preservedDoc[f.Name]; ok {
-				ff.Doc = doc
+			if ff.Doc == "" {
+				if doc, ok := preservedDoc[f.Name]; ok {
+					ff.Doc = doc
+				}
 			}
 			es.Fields = append(es.Fields, ff)
 		}
-		// Methods: refresh signatures/positions; add new methods; preserve
-		// existing Why on retained methods.
+		// Methods: refresh signatures/positions and why (source wins); add new
+		// methods.
 		for mn, fm := range fs.Methods {
 			if em, ok := es.Methods[mn]; ok {
 				em.SignatureText = fm.SignatureText
 				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+				em.Why = extract.PreferFresh(em.Why, fm.Why)
 			} else {
 				es.Methods[mn] = fm
 				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
@@ -331,10 +352,12 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 			continue
 		}
 		ei.File, ei.Line, ei.Source = fi.File, fi.Line, fi.Source
+		ei.Why = extract.PreferFresh(ei.Why, fi.Why)
 		for mn, fm := range fi.Methods {
 			if em, ok := ei.Methods[mn]; ok {
 				em.SignatureText = fm.SignatureText
 				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+				em.Why = extract.PreferFresh(em.Why, fm.Why)
 			} else {
 				ei.Methods[mn] = fm
 				added = append(added, fmt.Sprintf("interface %s.%s", name, mn))
@@ -353,6 +376,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		}
 		ef.SignatureText = ff.SignatureText
 		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
+		ef.Why = extract.PreferFresh(ef.Why, ff.Why)
 	}
 
 	// Typedefs.
@@ -366,6 +390,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 		}
 		et.Underlying = ft.Underlying
 		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
+		et.Why = extract.PreferFresh(et.Why, ft.Why)
 	}
 
 	sort.Strings(added)

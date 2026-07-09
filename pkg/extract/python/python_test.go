@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/waywardgeek/lyre/pkg/cdd"
 	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/extract/python"
-	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // sampleSource is a small Python module exercising:
@@ -488,7 +488,11 @@ func TestUpdatePy_AlreadyUpToDate(t *testing.T) {
 // TestUpdatePy_PreservesHumanProse uses the cleaner approach: construct a
 // PackageInfo with prose set, write it via cdd.Write to seed the fixture,
 // then run UpdatePy. No fragile string-splicing.
-func TestUpdatePy_PreservesHumanProse(t *testing.T) {
+// TestUpdatePy_RefreshesWhyFromSource verifies the source-of-truth policy:
+// module-level prose is preserved (human/design-curated), per-decl why: is
+// refreshed from the Python docstring (source wins), and a field with no source
+// comment keeps its hand-written doc.
+func TestUpdatePy_RefreshesWhyFromSource(t *testing.T) {
 	requireExtractor(t)
 	dir := writeTempPy(t, sampleSource)
 	outPath := filepath.Join(dir, filepath.Base(dir)+".py.lyric")
@@ -499,10 +503,10 @@ func TestUpdatePy_PreservesHumanProse(t *testing.T) {
 	}
 	p.ModuleWhy = "geometry primitives"
 	if c, ok := p.Structs["Circle"]; ok {
-		c.Why = "a flat round geometric primitive"
+		c.Why = "a flat round geometric primitive" // stale: Circle has a docstring, so update overwrites this
 		for i, f := range c.Fields {
 			if f.Name == "radius" {
-				c.Fields[i].Doc = "in scene units"
+				c.Fields[i].Doc = "in scene units" // radius has no source comment → preserved
 			}
 		}
 	}
@@ -521,14 +525,18 @@ func TestUpdatePy_PreservesHumanProse(t *testing.T) {
 	updated, _ := os.ReadFile(outPath)
 	updatedStr := string(updated)
 	for _, want := range []string{
-		`why: "geometry primitives"`,
-		`why: "a flat round geometric primitive"`,
-		`doc: "in scene units"`,
-		`func describe(c: Circle) -> str`,
+		`why: "geometry primitives"`,      // module why: human-curated, preserved
+		`why: "A 2D circle."`,             // per-decl why: refreshed from docstring
+		`doc: "in scene units"`,           // field doc: no source comment, preserved
+		`func describe(c: Circle) -> str`, // new symbol added
 	} {
 		if !strings.Contains(updatedStr, want) {
 			t.Errorf("update lost or failed to add %q\n--- file ---\n%s", want, updatedStr)
 		}
+	}
+	// The stale hand-written Circle why must be overwritten by the docstring.
+	if strings.Contains(updatedStr, "a flat round geometric primitive") {
+		t.Errorf("stale hand-written Circle why should be overwritten by docstring\n--- file ---\n%s", updatedStr)
 	}
 }
 

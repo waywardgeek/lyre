@@ -205,3 +205,68 @@ func TestSanitizeModuleName(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanDocLine(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"// hello world", "hello world"},
+		{"// first line\n// second", "first line"},
+		{"\n\n// after blanks", "after blanks"},
+		{"# python style", "python style"},
+		{"/** javadoc */", "javadoc */"}, // /** stripped, */ remains for now
+		{"  collapse   internal  whitespace  ", "collapse internal whitespace"},
+	}
+	for _, tc := range cases {
+		got := CleanDocLine(tc.in)
+		if got != tc.want {
+			t.Errorf("CleanDocLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestPreferFresh(t *testing.T) {
+	if got := PreferFresh("old", "new"); got != "new" {
+		t.Errorf("PreferFresh(old,new) = %q, want new (source wins)", got)
+	}
+	if got := PreferFresh("old", ""); got != "old" {
+		t.Errorf("PreferFresh(old,\"\") = %q, want old (preserve prose when no source comment)", got)
+	}
+	if got := PreferFresh("old", "  "); got != "old" {
+		t.Errorf("PreferFresh(old, whitespace) = %q, want old", got)
+	}
+}
+
+func TestSeedWhyFromDoc(t *testing.T) {
+	p := NewPackageInfo("m")
+	s := NewStructInfo()
+	s.Doc = "// Widget renders a thing.\n// More detail here."
+	s.Methods["Draw"] = &FuncInfo{Doc: "Draw paints the widget."}
+	s.Fields = []FieldInfo{{Name: "X", Doc: "the x coord\nwrapped"}}
+	p.Structs["Widget"] = s
+	ifc := NewInterfaceInfo()
+	ifc.Doc = "Drawable can be drawn."
+	p.Interfaces["Drawable"] = ifc
+	p.Functions["New"] = &FuncInfo{Doc: "New makes one.", Why: "hand-written keep"}
+	p.TypeDefs["ID"] = &TypeDefInfo{Doc: "ID identifies a widget."}
+
+	SeedWhyFromDoc(p)
+
+	if s.Why != "Widget renders a thing." {
+		t.Errorf("struct Why = %q", s.Why)
+	}
+	if s.Methods["Draw"].Why != "Draw paints the widget." {
+		t.Errorf("method Why = %q", s.Methods["Draw"].Why)
+	}
+	if s.Fields[0].Doc != "the x coord" {
+		t.Errorf("field Doc = %q (want one-line)", s.Fields[0].Doc)
+	}
+	if ifc.Why != "Drawable can be drawn." {
+		t.Errorf("iface Why = %q", ifc.Why)
+	}
+	if p.Functions["New"].Why != "hand-written keep" {
+		t.Errorf("func Why = %q (should not clobber existing prose)", p.Functions["New"].Why)
+	}
+	if p.TypeDefs["ID"].Why != "ID identifies a widget." {
+		t.Errorf("typedef Why = %q", p.TypeDefs["ID"].Why)
+	}
+}

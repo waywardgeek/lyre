@@ -65,7 +65,7 @@ func SeedRichPlaceholders(p *extract.PackageInfo) {
 				// comments separately) — leave empty.
 				continue
 			}
-			s.Fields[i].Doc = cleanDocLine(s.Fields[i].Doc)
+			s.Fields[i].Doc = extract.CleanDocLine(s.Fields[i].Doc)
 		}
 	}
 
@@ -113,38 +113,12 @@ func hasDocTitle(docs []extract.DocBlock, title string) bool {
 // referencing the declaration name is returned. The result is always a
 // single line suitable for the one-line `why:` slot (spec §4 row-2).
 func seedWhy(declName, doc string) string {
-	if line := cleanDocLine(doc); line != "" {
+	if line := extract.CleanDocLine(doc); line != "" {
 		return line
 	}
 	return "TODO: explain " + declName + "."
 }
 
-// cleanDocLine extracts a one-line summary from a multi-line native-source
-// doc comment. It picks the first non-empty line, strips common comment
-// markers (`// `, `# `, `* `, `/** `), trims whitespace, and collapses
-// embedded whitespace. Returns "" if no usable content is found.
-func cleanDocLine(doc string) string {
-	for _, raw := range strings.Split(doc, "\n") {
-		line := strings.TrimSpace(raw)
-		// Strip leading comment markers.
-		for {
-			trimmed := line
-			for _, prefix := range []string{"// ", "//", "# ", "#", "/**", "/*", "*/", "* ", "*"} {
-				if strings.HasPrefix(trimmed, prefix) {
-					trimmed = strings.TrimSpace(trimmed[len(prefix):])
-				}
-			}
-			if trimmed == line {
-				break
-			}
-			line = trimmed
-		}
-		if line == "" {
-			continue
-		}
-		// Collapse internal whitespace.
-		fields := strings.Fields(line)
-		return strings.Join(fields, " ")
-	}
-	return ""
-}
+// cleanDocLine moved to pkg/extract as extract.CleanDocLine so that the
+// language extractors (which cannot import pkg/gen without a cycle) can share
+// the same one-line reduction logic.
