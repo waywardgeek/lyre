@@ -106,6 +106,17 @@ module golang
     otherwise report such orphans as drift.
     """
 
+  invariant "VerifyGo flags declarations in .lyric but absent from source":
+    verified-by: TestVerifyGo_OrphanDetection, TestVerifyGo_MissingFunction
+    """
+    VerifyGo re-extracts the Go source next to the .lyric and reports a
+    SevError for every struct, interface, typedef, function, struct field,
+    struct method, or interface method that the .lyric documents but source no
+    longer declares ("X declared in .lyric but not found in source"). This is
+    the read-only drift safety net: unlike UpdateGo (which prunes orphans in
+    place), VerifyGo never mutates files, so it is the check to run in CI.
+    """
+
   invariant "W007 test discovery is module-wide, not package-local":
     verified-by: TestDiscoverTestFuncs, TestDiscoverTestFuncs_NoGoMod
     """

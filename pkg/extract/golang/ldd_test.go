@@ -574,3 +574,81 @@ func TestDiscoverTestFuncs_NoGoMod(t *testing.T) {
 		t.Errorf("expected TestZeta to be discovered; got %v", got)
 	}
 }
+
+// TestVerifyGo_OrphanDetection exercises VerifyGo's "declared in .lyric but
+// not found in source" branches — the safety net that flags documentation
+// left behind when a declaration is removed from source. TestVerifyGo_Missing-
+// Function already covers the top-level-function branch; this covers the
+// struct, interface, typedef, struct-field, struct-method, and interface-
+// method branches. For each case we generate a .lyric from `full`, then
+// rewrite the source to `reduced` and assert VerifyGo reports the orphan.
+func TestVerifyGo_OrphanDetection(t *testing.T) {
+	cases := []struct {
+		name    string
+		full    string
+		reduced string
+		want    string
+	}{
+		{
+			name:    "struct",
+			full:    "package shapes\n\n// Widget does things.\ntype Widget struct {\n\tN int\n}\n",
+			reduced: "package shapes\n",
+			want:    "struct Widget declared in .lyric but not found in source",
+		},
+		{
+			name:    "interface",
+			full:    "package shapes\n\n// Reader reads.\ntype Reader interface {\n\tRead() int\n}\n",
+			reduced: "package shapes\n",
+			want:    "interface Reader declared in .lyric but not found in source",
+		},
+		{
+			name:    "typedef",
+			full:    "package shapes\n\n// Meters is a distance.\ntype Meters int\n",
+			reduced: "package shapes\n",
+			want:    "typedef Meters declared in .lyric but not found in source",
+		},
+		{
+			name:    "struct field",
+			full:    "package shapes\n\n// Box holds stuff.\ntype Box struct {\n\tW int\n\tH int\n}\n",
+			reduced: "package shapes\n\n// Box holds stuff.\ntype Box struct {\n\tW int\n}\n",
+			want:    "struct Box: field H not found in source",
+		},
+		{
+			name:    "struct method",
+			full:    "package shapes\n\n// Gadget spins.\ntype Gadget struct{}\n\n// Spin spins it.\nfunc (Gadget) Spin() {}\n",
+			reduced: "package shapes\n\n// Gadget spins.\ntype Gadget struct{}\n",
+			want:    "struct Gadget: method Spin not found in source",
+		},
+		{
+			name:    "interface method",
+			full:    "package shapes\n\n// Doer does and undoes.\ntype Doer interface {\n\tDo()\n\tUndo()\n}\n",
+			reduced: "package shapes\n\n// Doer does and undoes.\ntype Doer interface {\n\tDo()\n}\n",
+			want:    "interface Doer: method Undo not found in source",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTempSource(t, tc.full)
+			outPath := generateAndWrite(t, dir)
+			// Replace source with the reduced variant so the .lyric now
+			// documents a declaration source no longer has.
+			if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(tc.reduced), 0644); err != nil {
+				t.Fatalf("writing reduced source: %v", err)
+			}
+			result, err := golang.VerifyGo(outPath)
+			if err != nil {
+				t.Fatalf("VerifyGo: %v", err)
+			}
+			found := false
+			for _, f := range result.Findings {
+				if f.Severity == golang.SevError && strings.Contains(f.Message, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected SevError containing %q; got %v", tc.want, result.Findings)
+			}
+		})
+	}
+}
