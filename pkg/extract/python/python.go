@@ -395,29 +395,29 @@ func GeneratePy(srcDir string) (outPath, content string, err error) {
 // UpdatePy refreshes lyricPath: re-extracts signatures/positions from
 // Python source, adds new exports, preserves all human prose (ModuleWhy,
 // Docs, Invariants, per-decl Why, per-field Doc). Source list refreshed.
-func UpdatePy(lyricPath string) (added []string, err error) {
+func UpdatePy(lyricPath string) (added, removed []string, err error) {
 	raw, err := os.ReadFile(lyricPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	existing, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+		return nil, nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}
 
 	srcDir := filepath.Dir(lyricPath)
 	fresh, err := ExtractPy(srcDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	added = mergeFreshIntoExisting(existing, fresh)
+	added, removed = mergeFreshIntoExisting(existing, fresh)
 
 	out := cdd.Write(existing)
 	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return added, nil
+	return added, removed, nil
 }
 
 // VerifyPy parses lyricPath as a .py.lyric v2 file, re-extracts the
@@ -451,13 +451,11 @@ func VerifyPy(lyricPath string) (*VerifyResult, error) {
 // --- merge ----------------------------------------------------------------
 
 // mergeFreshIntoExisting refreshes signatures/positions on existing decls
-// from `fresh`, adds new exports, and refreshes the module source list.
-// All human prose on existing decls is preserved.
-//
-// NOT pruned: decls present in existing but absent from fresh remain in
-// the file (VerifyPy reports them as drift).
-func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
-	var added []string
+// from `fresh`, adds new exports, refreshes the module source list, and prunes
+// decls that source no longer exports (via extract.PruneOrphans). Human prose
+// on surviving decls is preserved; prose on pruned decls is discarded with
+// them. Returns the added and removed declaration labels.
+func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) (added, removed []string) {
 
 	existing.ModuleSource = fresh.ModuleSource
 
@@ -549,7 +547,8 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 	}
 
 	sort.Strings(added)
-	return added
+	removed = extract.PruneOrphans(existing, fresh)
+	return added, removed
 }
 
 // --- verify comparison helpers --------------------------------------------

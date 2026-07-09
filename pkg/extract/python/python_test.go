@@ -452,7 +452,7 @@ func TestUpdatePy_AddsNewExport(t *testing.T) {
 		t.Fatalf("writing extended source: %v", err)
 	}
 
-	added, err := python.UpdatePy(outPath)
+	added, _, err := python.UpdatePy(outPath)
 	if err != nil {
 		t.Fatalf("UpdatePy: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestUpdatePy_AlreadyUpToDate(t *testing.T) {
 	requireExtractor(t)
 	dir := writeTempPy(t, sampleSource)
 	outPath := generateAndWrite(t, dir)
-	added, err := python.UpdatePy(outPath)
+	added, _, err := python.UpdatePy(outPath)
 	if err != nil {
 		t.Fatalf("UpdatePy: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestUpdatePy_RefreshesWhyFromSource(t *testing.T) {
 		[]byte(sampleSource+extraFunc), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
-	if _, err := python.UpdatePy(outPath); err != nil {
+	if _, _, err := python.UpdatePy(outPath); err != nil {
 		t.Fatalf("UpdatePy: %v", err)
 	}
 
@@ -550,7 +550,7 @@ func TestUpdatePy_RefreshesPositionsAndSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shapes.py"), []byte(shifted), 0644); err != nil {
 		t.Fatalf("writing shifted source: %v", err)
 	}
-	if _, err := python.UpdatePy(outPath); err != nil {
+	if _, _, err := python.UpdatePy(outPath); err != nil {
 		t.Fatalf("UpdatePy: %v", err)
 	}
 
@@ -614,3 +614,32 @@ func ifaceNames(p *extract.PackageInfo) []string {
 
 // Compile-time assertion that ExtractPy returns the expected type.
 var _ func(string) (*extract.PackageInfo, error) = python.ExtractPy
+
+// TestUpdatePy_PrunesRemovedExport proves prune-by-default: a function removed
+// from source is dropped from the .py.lyric and reported in `removed`.
+func TestUpdatePy_PrunesRemovedExport(t *testing.T) {
+	requireExtractor(t)
+	dir := writeTempPy(t, sampleSource+extraFunc)
+	outPath := generateAndWrite(t, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "shapes.py"), []byte(sampleSource), 0644); err != nil {
+		t.Fatalf("writing reduced source: %v", err)
+	}
+	_, removed, err := python.UpdatePy(outPath)
+	if err != nil {
+		t.Fatalf("UpdatePy: %v", err)
+	}
+	found := false
+	for _, name := range removed {
+		if strings.Contains(name, "describe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected describe in removed list, got: %v", removed)
+	}
+	updated, _ := os.ReadFile(outPath)
+	if strings.Contains(string(updated), "describe") {
+		t.Errorf("pruned .py.lyric should not mention describe; got:\n%s", updated)
+	}
+}

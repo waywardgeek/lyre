@@ -322,7 +322,7 @@ func TestUpdateGo_AddsNewExport(t *testing.T) {
 		t.Fatalf("writing extended source: %v", err)
 	}
 
-	added, err := golang.UpdateGo(outPath)
+	added, _, err := golang.UpdateGo(outPath)
 	if err != nil {
 		t.Fatalf("UpdateGo: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestUpdateGo_AlreadyUpToDate(t *testing.T) {
 	dir := writeTempSource(t, sampleSource)
 	outPath := generateAndWrite(t, dir)
 
-	added, err := golang.UpdateGo(outPath)
+	added, _, err := golang.UpdateGo(outPath)
 	if err != nil {
 		t.Fatalf("UpdateGo: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestUpdateGo_RefreshesWhyFromSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(extended), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
-	if _, err := golang.UpdateGo(outPath); err != nil {
+	if _, _, err := golang.UpdateGo(outPath); err != nil {
 		t.Fatalf("UpdateGo: %v", err)
 	}
 
@@ -418,7 +418,7 @@ func TestUpdateGo_RefreshesPositionsAndSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(shifted), 0644); err != nil {
 		t.Fatalf("writing shifted source: %v", err)
 	}
-	if _, err := golang.UpdateGo(outPath); err != nil {
+	if _, _, err := golang.UpdateGo(outPath); err != nil {
 		t.Fatalf("UpdateGo: %v", err)
 	}
 
@@ -434,5 +434,50 @@ func TestUpdateGo_RefreshesPositionsAndSource(t *testing.T) {
 	}
 	if nc.Line <= 5 {
 		t.Errorf("NewCircle line should have shifted past the 5-line pad; got line %d", nc.Line)
+	}
+}
+
+// TestUpdateGo_PrunesRemovedExport proves prune-by-default end to end: a decl
+// removed from source is dropped from the .lyric, reported in `removed`, and
+// leaves verify clean (no orphan drift).
+func TestUpdateGo_PrunesRemovedExport(t *testing.T) {
+	dir := writeTempSource(t, sampleSource+"\nfunc Describe(c *Circle) string { return \"\" }\n")
+	outPath := generateAndWrite(t, dir)
+
+	before, _ := os.ReadFile(outPath)
+	if !strings.Contains(string(before), "Describe") {
+		t.Fatalf("precondition: generated .lyric should contain Describe;\n%s", before)
+	}
+
+	// Remove Describe from source.
+	if err := os.WriteFile(filepath.Join(dir, "shapes.go"), []byte(sampleSource), 0644); err != nil {
+		t.Fatalf("writing reduced source: %v", err)
+	}
+
+	_, removed, err := golang.UpdateGo(outPath)
+	if err != nil {
+		t.Fatalf("UpdateGo: %v", err)
+	}
+	found := false
+	for _, name := range removed {
+		if strings.Contains(name, "Describe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Describe in removed list, got: %v", removed)
+	}
+
+	updated, _ := os.ReadFile(outPath)
+	if strings.Contains(string(updated), "Describe") {
+		t.Errorf("pruned .go.lyric should not mention Describe; got:\n%s", updated)
+	}
+
+	res, err := golang.VerifyGo(outPath)
+	if err != nil {
+		t.Fatalf("VerifyGo: %v", err)
+	}
+	if res.ErrorCount() != 0 {
+		t.Errorf("expected clean verify after prune, got %d errors", res.ErrorCount())
 	}
 }

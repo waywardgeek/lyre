@@ -259,39 +259,38 @@ func GenerateGo(srcDir string) (outPath, content string, err error) {
 // It adds new exports and preserves ModuleWhy, Docs, Invariants, per-decl Why,
 // and per-field Doc. Returns the human-readable list of additions ("struct
 // Foo", "func Bar", ...). Source list is refreshed.
-func UpdateGo(lyricPath string) (added []string, err error) {
+func UpdateGo(lyricPath string) (added, removed []string, err error) {
 	raw, err := os.ReadFile(lyricPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	existing, err := cdd.Parse(string(raw), lyricPath)
 	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
+		return nil, nil, fmt.Errorf("parsing %s: %w", lyricPath, err)
 	}
 
 	srcDir := filepath.Dir(lyricPath)
 	fresh, err := ExtractGo(srcDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	added = mergeFreshIntoExisting(existing, fresh)
+	added, removed = mergeFreshIntoExisting(existing, fresh)
 
 	out := cdd.Write(existing)
 	if err := os.WriteFile(lyricPath, []byte(out), 0644); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return added, nil
+	return added, removed, nil
 }
 
 // mergeFreshIntoExisting refreshes signatures/positions on existing decls
-// from `fresh`, adds new exports, and refreshes module-level source list.
-// All human prose on existing decls is preserved.
-//
-// NOT pruned (Phase 4/6 will add a --prune option): decls present in
-// existing but absent from fresh remain in the file. Verify reports them.
-func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
-	var added []string
+// from `fresh`, adds new exports, refreshes the module-level source list, and
+// prunes decls that source no longer exports (via extract.PruneOrphans).
+// Human prose on surviving decls is preserved; prose on pruned decls is
+// discarded with them (the decl is gone from source, so its docs are stale).
+// Returns the added and removed declaration labels.
+func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) (added, removed []string) {
 
 	// Refresh module-level source list (always overwrite — it's mechanical).
 	existing.ModuleSource = fresh.ModuleSource
@@ -395,7 +394,8 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) []string {
 	}
 
 	sort.Strings(added)
-	return added
+	removed = extract.PruneOrphans(existing, fresh)
+	return added, removed
 }
 
 func sortedKeys[V any](m map[string]V) []string {

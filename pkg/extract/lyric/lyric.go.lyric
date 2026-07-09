@@ -169,7 +169,7 @@ module lyric
     source: lyric.go:47
     why: "Severity levels for verification findings."
 
-  func UpdateLy(lyricPath string) (added []string, err error)
+  func UpdateLy(lyricPath string) (added, removed []string, err error)
     source: lyric.go:401
     why: "UpdateLy refreshes an existing .ly.lyric in place, re-extracting source while preserving all human prose."
 

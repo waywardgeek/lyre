@@ -117,8 +117,20 @@ module extract
     synchronization if they process a PackageInfo concurrently.
     """
 
+  invariant "update prunes declarations deleted from source":
+    verified-by: TestPruneOrphans
+    """
+    PruneOrphans removes declarations present in an existing .lyric but absent
+    from freshly-extracted source — structs/classes, interfaces, functions,
+    typedefs, and methods within surviving structs/interfaces — returning the
+    removed labels sorted. It is the destructive half of `lyre update`
+    (prune-by-default) that keeps every extractor's .lyric in exact sync with
+    its source's exported surface; each mergeFreshIntoExisting calls it after
+    refreshing existing decls and adding new ones.
+    """
+
   struct PackageInfo
-    source: extract.go:18
+    source: extract.go:22
     why: "PackageInfo is the language-agnostic representation of a package's exported"
     field Name: string
     field Structs: map[string]*StructInfo
@@ -135,13 +147,13 @@ module extract
       doc: "named invariant \"...\" blocks"
 
   struct DocBlock
-    source: extract.go:33
+    source: extract.go:37
     why: "DocBlock is a titled prose section (e.g. doc \"Architecture\":)."
     field Title: string
     field Content: string
 
   struct Invariant
-    source: extract.go:39
+    source: extract.go:43
     why: "Invariant is a titled invariant block with optional verification metadata."
     field Title: string
     field Content: string
@@ -151,7 +163,7 @@ module extract
       doc: "test function names that verify this invariant"
 
   struct StructInfo
-    source: extract.go:47
+    source: extract.go:51
     why: "StructInfo describes a struct/class with fields and methods."
     field Fields: []FieldInfo
       doc: "ordered list of fields; was map[string]string before Phase 1"
@@ -169,23 +181,23 @@ module extract
     field Source: string
       doc: "canonical \"file:line\" reference; refreshed by `lyre update`"
     method FieldSig(name string) (string, bool)
-      source: extract.go:138
+      source: extract.go:142
       why: "FieldSig returns the SignatureText of the named field, if present."
     method HasField(name string) bool
-      source: extract.go:148
+      source: extract.go:152
       why: "HasField reports whether the struct has a field with the given name."
     method SetField(name, sig string)
-      source: extract.go:156
+      source: extract.go:160
       why: "SetField appends or updates a field by name. Order is preserved on update;"
     method SetFieldDoc(name, doc string)
-      source: extract.go:168
+      source: extract.go:172
       why: "SetFieldDoc sets the per-field doc for the named field. Creates the field"
     method FieldNames() []string
-      source: extract.go:179
+      source: extract.go:183
       why: "FieldNames returns the field names in source order."
 
   struct FieldInfo
-    source: extract.go:65
+    source: extract.go:69
     why: "FieldInfo describes a single struct/class field."
     field Name: string
     field SignatureText: string
@@ -193,7 +205,7 @@ module extract
       doc: "per-field doc (rich-doc addition)"
 
   struct InterfaceInfo
-    source: extract.go:72
+    source: extract.go:76
     why: "InterfaceInfo describes an interface with methods."
     field Methods: map[string]*FuncInfo
     field Doc: string
@@ -205,7 +217,7 @@ module extract
       doc: "canonical \"file:line\" reference; refreshed by `lyre update`"
 
   struct FuncInfo
-    source: extract.go:92
+    source: extract.go:96
     why: "FuncInfo describes a function or method signature."
     field SignatureText: string
       doc: "verbatim native signature incl. name (Phase 2 round-trip)"
@@ -221,14 +233,14 @@ module extract
     field Source: string
 
   struct ParamInfo
-    source: extract.go:106
+    source: extract.go:110
     why: "ParamInfo describes a function parameter."
     field Name: string
     field Type: string
     field IsMut: bool
 
   struct TypeDefInfo
-    source: extract.go:113
+    source: extract.go:117
     why: "TypeDefInfo describes a type alias or newtype and its underlying type."
     field Underlying: string
       doc: "the underlying type string, if simple"
@@ -241,7 +253,7 @@ module extract
       doc: "canonical \"file:line\" reference; round-trips through .lyric"
 
   struct LDDMeta
-    source: extract.go:125
+    source: extract.go:129
     why: "LDDMeta holds the LDD-specific metadata parsed from structured comments."
     field Source: []string
       doc: "source files this understanding file covers"
@@ -251,37 +263,41 @@ module extract
       doc: "detected language (go, python, typescript, lyric)"
 
   func SortedFieldsByName(fields []FieldInfo) []FieldInfo
-    source: extract.go:189
+    source: extract.go:193
     why: "SortedFieldsByName returns a copy of the field slice sorted alphabetically"
 
   func DetectLanguage(filename string) string
-    source: extract.go:203
+    source: extract.go:207
     why: "DetectLanguage returns the source language from a compound .lyric extension."
 
   func SanitizeModuleName(name string) string
-    source: extract.go:250
+    source: extract.go:254
     why: "SanitizeModuleName converts a directory base name into a valid Lyric"
 
   func NewPackageInfo(name string) *PackageInfo
-    source: extract.go:276
+    source: extract.go:280
     why: "NewPackageInfo creates an initialized PackageInfo."
 
   func NewStructInfo() *StructInfo
-    source: extract.go:288
+    source: extract.go:292
     why: "NewStructInfo creates an initialized StructInfo. Fields starts empty; use"
 
   func NewInterfaceInfo() *InterfaceInfo
-    source: extract.go:295
+    source: extract.go:299
     why: "NewInterfaceInfo creates an initialized InterfaceInfo."
 
   func CleanDocLine(doc string) string
-    source: extract.go:310
+    source: extract.go:314
     why: "CleanDocLine extracts a one-line summary from a multi-line native-source"
 
   func PreferFresh(existing, fresh string) string
-    source: extract.go:339
+    source: extract.go:343
     why: "PreferFresh returns fresh when it is non-empty, else keeps existing. Source"
 
+  func PruneOrphans(existing, fresh *PackageInfo) []string
+    source: extract.go:366
+    why: "PruneOrphans removes declarations present in `existing` but absent from"
+
   func SeedWhyFromDoc(p *PackageInfo)
-    source: extract.go:358
+    source: extract.go:436
     why: "SeedWhyFromDoc populates each declaration's one-line `Why` from its scraped"

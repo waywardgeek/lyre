@@ -352,7 +352,7 @@ func TestUpdateTs_AddsNewExport(t *testing.T) {
 		t.Fatalf("writing extended source: %v", err)
 	}
 
-	added, err := typescript.UpdateTs(outPath)
+	added, _, err := typescript.UpdateTs(outPath)
 	if err != nil {
 		t.Fatalf("UpdateTs: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestUpdateTs_AlreadyUpToDate(t *testing.T) {
 	dir := writeTempTs(t, sampleSource)
 	outPath := generateAndWrite(t, dir)
 
-	added, err := typescript.UpdateTs(outPath)
+	added, _, err := typescript.UpdateTs(outPath)
 	if err != nil {
 		t.Fatalf("UpdateTs: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestUpdateTs_PreservesHumanProse(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shapes.ts"), []byte(extended), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
-	if _, err := typescript.UpdateTs(outPath); err != nil {
+	if _, _, err := typescript.UpdateTs(outPath); err != nil {
 		t.Fatalf("UpdateTs: %v", err)
 	}
 
@@ -446,7 +446,7 @@ func TestUpdateTs_RefreshesPositionsAndSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shapes.ts"), []byte(shifted), 0644); err != nil {
 		t.Fatalf("writing shifted source: %v", err)
 	}
-	if _, err := typescript.UpdateTs(outPath); err != nil {
+	if _, _, err := typescript.UpdateTs(outPath); err != nil {
 		t.Fatalf("UpdateTs: %v", err)
 	}
 
@@ -492,3 +492,31 @@ func TestUpdateTs_MultipleFiles(t *testing.T) {
 // Compile-time assertion that ExtractTs returns the expected type — caught
 // in case the shared data model shifts under us.
 var _ func(string) (*extract.PackageInfo, error) = typescript.ExtractTs
+
+// TestUpdateTs_PrunesRemovedExport proves prune-by-default: a function removed
+// from source is dropped from the .ts.lyric and reported in `removed`.
+func TestUpdateTs_PrunesRemovedExport(t *testing.T) {
+	dir := writeTempTs(t, sampleSource+"\nexport function describe(c: Circle): string {\n  return \"\";\n}\n")
+	outPath := generateAndWrite(t, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "shapes.ts"), []byte(sampleSource), 0644); err != nil {
+		t.Fatalf("writing reduced source: %v", err)
+	}
+	_, removed, err := typescript.UpdateTs(outPath)
+	if err != nil {
+		t.Fatalf("UpdateTs: %v", err)
+	}
+	found := false
+	for _, name := range removed {
+		if strings.Contains(name, "describe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected describe in removed list, got: %v", removed)
+	}
+	updated, _ := os.ReadFile(outPath)
+	if strings.Contains(string(updated), "describe") {
+		t.Errorf("pruned .ts.lyric should not mention describe; got:\n%s", updated)
+	}
+}

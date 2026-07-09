@@ -11,7 +11,11 @@
 // for fields; FuncInfo for methods/functions still holds structured params).
 package extract
 
-import "strings"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // PackageInfo is the language-agnostic representation of a package's exported
 // API — the "narrow waist" every extractor produces and every consumer reads.
@@ -341,6 +345,80 @@ func PreferFresh(existing, fresh string) string {
 		return fresh
 	}
 	return existing
+}
+
+// PruneOrphans removes declarations present in `existing` but absent from
+// `fresh` (the just-extracted source view), returning the removed declaration
+// labels sorted for deterministic output.
+//
+// It is the destructive half of `lyre update`: mergeFreshIntoExisting refreshes
+// and ADDS decls from source, PruneOrphans DELETES decls that source no longer
+// exports, so `update` keeps the .lyric in exact sync with the source's
+// exported surface (prune-by-default). Struct/interface fields are already
+// reconciled in place by mergeFreshIntoExisting (it rebuilds Fields from
+// fresh); PruneOrphans handles top-level decls (structs/classes, interfaces,
+// functions, typedefs) and the methods within surviving structs and interfaces.
+//
+// Human prose on a pruned decl is discarded with it: the decl is gone from
+// source, so its documentation is stale by definition. Because a failed
+// extraction returns an error before merge/prune run, this never sees a
+// spuriously empty `fresh`.
+func PruneOrphans(existing, fresh *PackageInfo) []string {
+	if existing == nil || fresh == nil {
+		return nil
+	}
+	var removed []string
+
+	for name, es := range existing.Structs {
+		fs, ok := fresh.Structs[name]
+		if !ok {
+			kind := "struct"
+			if es.IsClass {
+				kind = "class"
+			}
+			removed = append(removed, kind+" "+name)
+			delete(existing.Structs, name)
+			continue
+		}
+		for mn := range es.Methods {
+			if _, ok := fs.Methods[mn]; !ok {
+				removed = append(removed, fmt.Sprintf("method %s.%s", name, mn))
+				delete(es.Methods, mn)
+			}
+		}
+	}
+
+	for name, ei := range existing.Interfaces {
+		fi, ok := fresh.Interfaces[name]
+		if !ok {
+			removed = append(removed, "interface "+name)
+			delete(existing.Interfaces, name)
+			continue
+		}
+		for mn := range ei.Methods {
+			if _, ok := fi.Methods[mn]; !ok {
+				removed = append(removed, fmt.Sprintf("interface %s.%s", name, mn))
+				delete(ei.Methods, mn)
+			}
+		}
+	}
+
+	for name := range existing.Functions {
+		if _, ok := fresh.Functions[name]; !ok {
+			removed = append(removed, "func "+name)
+			delete(existing.Functions, name)
+		}
+	}
+
+	for name := range existing.TypeDefs {
+		if _, ok := fresh.TypeDefs[name]; !ok {
+			removed = append(removed, "typedef "+name)
+			delete(existing.TypeDefs, name)
+		}
+	}
+
+	sort.Strings(removed)
+	return removed
 }
 
 // SeedWhyFromDoc populates each declaration's one-line `Why` from its scraped

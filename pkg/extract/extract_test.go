@@ -270,3 +270,100 @@ func TestSeedWhyFromDoc(t *testing.T) {
 		t.Errorf("typedef Why = %q", p.TypeDefs["ID"].Why)
 	}
 }
+
+// TestPruneOrphans covers the destructive half of `lyre update`: decls present
+// in the existing .lyric but absent from freshly-extracted source are removed,
+// including methods within surviving structs/interfaces, while survivors and
+// their still-present members are untouched. Removed labels are sorted.
+func TestPruneOrphans(t *testing.T) {
+	existing := &PackageInfo{
+		Structs: map[string]*StructInfo{
+			"Keep":    {Methods: map[string]*FuncInfo{"M1": {}, "GoneMethod": {}}},
+			"Gone":    {},
+			"KeepCls": {IsClass: true, Methods: map[string]*FuncInfo{}},
+			"GoneCls": {IsClass: true},
+		},
+		Interfaces: map[string]*InterfaceInfo{
+			"IKeep": {Methods: map[string]*FuncInfo{"A": {}, "GoneM": {}}},
+			"IGone": {},
+		},
+		Functions: map[string]*FuncInfo{"FKeep": {}, "FGone": {}},
+		TypeDefs:  map[string]*TypeDefInfo{"TKeep": {}, "TGone": {}},
+	}
+	fresh := &PackageInfo{
+		Structs: map[string]*StructInfo{
+			"Keep":    {Methods: map[string]*FuncInfo{"M1": {}}}, // GoneMethod dropped
+			"KeepCls": {IsClass: true, Methods: map[string]*FuncInfo{}},
+		},
+		Interfaces: map[string]*InterfaceInfo{
+			"IKeep": {Methods: map[string]*FuncInfo{"A": {}}}, // GoneM dropped
+		},
+		Functions: map[string]*FuncInfo{"FKeep": {}},
+		TypeDefs:  map[string]*TypeDefInfo{"TKeep": {}},
+	}
+
+	removed := PruneOrphans(existing, fresh)
+
+	want := []string{
+		"class GoneCls",
+		"func FGone",
+		"interface IGone",
+		"interface IKeep.GoneM",
+		"method Keep.GoneMethod",
+		"struct Gone",
+		"typedef TGone",
+	}
+	if !reflect.DeepEqual(removed, want) {
+		t.Fatalf("removed = %v\nwant       %v", removed, want)
+	}
+
+	// Survivors intact.
+	if _, ok := existing.Structs["Keep"]; !ok {
+		t.Error("struct Keep was wrongly pruned")
+	}
+	if _, ok := existing.Structs["KeepCls"]; !ok {
+		t.Error("class KeepCls was wrongly pruned")
+	}
+	if _, ok := existing.Structs["Keep"].Methods["M1"]; !ok {
+		t.Error("Keep.M1 (still in source) was wrongly pruned")
+	}
+	if _, ok := existing.Structs["Keep"].Methods["GoneMethod"]; ok {
+		t.Error("Keep.GoneMethod (absent from source) was not pruned")
+	}
+	if _, ok := existing.Interfaces["IKeep"].Methods["A"]; !ok {
+		t.Error("IKeep.A (still in source) was wrongly pruned")
+	}
+	if _, ok := existing.Interfaces["IKeep"].Methods["GoneM"]; ok {
+		t.Error("IKeep.GoneM (absent from source) was not pruned")
+	}
+	if len(existing.Structs) != 2 || len(existing.Interfaces) != 1 ||
+		len(existing.Functions) != 1 || len(existing.TypeDefs) != 1 {
+		t.Errorf("unexpected survivor counts: structs=%d interfaces=%d funcs=%d typedefs=%d",
+			len(existing.Structs), len(existing.Interfaces), len(existing.Functions), len(existing.TypeDefs))
+	}
+}
+
+// TestPruneOrphans_NoOrphans returns nothing when source and .lyric agree.
+func TestPruneOrphans_NoOrphans(t *testing.T) {
+	p := &PackageInfo{
+		Structs:  map[string]*StructInfo{"A": {Methods: map[string]*FuncInfo{"m": {}}}},
+		Functions: map[string]*FuncInfo{"F": {}},
+	}
+	q := &PackageInfo{
+		Structs:  map[string]*StructInfo{"A": {Methods: map[string]*FuncInfo{"m": {}}}},
+		Functions: map[string]*FuncInfo{"F": {}},
+	}
+	if got := PruneOrphans(p, q); len(got) != 0 {
+		t.Errorf("expected no removals, got %v", got)
+	}
+}
+
+// TestPruneOrphans_NilSafe guards the nil inputs.
+func TestPruneOrphans_NilSafe(t *testing.T) {
+	if got := PruneOrphans(nil, &PackageInfo{}); got != nil {
+		t.Errorf("nil existing: want nil, got %v", got)
+	}
+	if got := PruneOrphans(&PackageInfo{}, nil); got != nil {
+		t.Errorf("nil fresh: want nil, got %v", got)
+	}
+}

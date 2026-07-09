@@ -177,6 +177,26 @@ func cmdVerify(args []string) error {
 
 // --- update ---
 
+// reportUpdate prints the added and pruned declarations from a `lyre update`.
+func reportUpdate(path string, added, removed []string) {
+	if len(added) == 0 && len(removed) == 0 {
+		fmt.Printf("%s: up to date\n", path)
+		return
+	}
+	if len(added) > 0 {
+		fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
+		for _, name := range added {
+			fmt.Printf("  + %s\n", name)
+		}
+	}
+	if len(removed) > 0 {
+		fmt.Printf("%s: pruned %d declaration(s):\n", path, len(removed))
+		for _, name := range removed {
+			fmt.Printf("  - %s\n", name)
+		}
+	}
+}
+
 func cmdUpdate(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: lyre update <file> [...]")
@@ -192,57 +212,29 @@ func cmdUpdate(args []string) error {
 		lang := extract.DetectLanguage(path)
 		switch lang {
 		case "lyric":
-			added, err := lyricext.UpdateLy(path)
+			added, removed, err := lyricext.UpdateLy(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
-			if len(added) == 0 {
-				fmt.Printf("%s: up to date\n", path)
-			} else {
-				fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
-				for _, name := range added {
-					fmt.Printf("  + %s\n", name)
-				}
-			}
+			reportUpdate(path, added, removed)
 		case "go":
-			added, err := golang.UpdateGo(path)
+			added, removed, err := golang.UpdateGo(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
-			if len(added) == 0 {
-				fmt.Printf("%s: up to date\n", path)
-			} else {
-				fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
-				for _, name := range added {
-					fmt.Printf("  + %s\n", name)
-				}
-			}
+			reportUpdate(path, added, removed)
 		case "python":
-			added, err := python.UpdatePy(path)
+			added, removed, err := python.UpdatePy(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
-			if len(added) == 0 {
-				fmt.Printf("%s: up to date\n", path)
-			} else {
-				fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
-				for _, name := range added {
-					fmt.Printf("  + %s\n", name)
-				}
-			}
+			reportUpdate(path, added, removed)
 		case "typescript":
-			added, err := tsext.UpdateTs(path)
+			added, removed, err := tsext.UpdateTs(path)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
-			if len(added) == 0 {
-				fmt.Printf("%s: up to date\n", path)
-			} else {
-				fmt.Printf("%s: added %d declaration(s):\n", path, len(added))
-				for _, name := range added {
-					fmt.Printf("  + %s\n", name)
-				}
-			}
+			reportUpdate(path, added, removed)
 		default:
 			return fmt.Errorf("%s: update not yet supported for %s files", path, lang)
 		}
@@ -429,7 +421,7 @@ func cmdFmt(args []string) error {
 // TODO: real implementation, or delete callers. Currently a stub. Plain
 // .lyric files in the old Forge-style syntax are vanishingly rare and will
 // be migrated to v2 format in Phase 6 of the rich-doc upgrade sprint.
-func runUpdate(path string, prune bool) error {
+func runUpdate(path string) error {
 	return fmt.Errorf("lyre update: legacy plain-.lyric update is not implemented for %s (use .ly.lyric files, or wait for v2 format migration)", path)
 }
 

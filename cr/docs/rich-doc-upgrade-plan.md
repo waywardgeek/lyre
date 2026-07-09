@@ -658,6 +658,9 @@ implementation against the locked v2 format.
    are added to the file; symbols absent from source are NOT pruned (the
    verifier reports them as drift; a future `--prune` flag covers
    destructive cleanup).
+   **[SUPERSEDED 2026-07-09 — see Amendment: Prune-by-default. Orphaned
+   decls are now pruned automatically on every `update`; there is no
+   `--prune` flag.]**
 
 5. **Whitespace-normalized signature comparison** in `VerifyGo` per spec
    §7. Plus the v1-era tolerances for `any` ↔ `interface{}` and
@@ -764,6 +767,7 @@ v2 format.
    Existing wins on all human prose. New exports are added; absent ones
    not pruned (verify reports drift; a future `--prune` flag covers
    destructive cleanup).
+   **[SUPERSEDED 2026-07-09 — see Amendment: Prune-by-default.]**
 
 7. **Module name = directory basename.** TS has no native package name
    like Go's `package` declaration; the directory name is the natural
@@ -1350,3 +1354,67 @@ single-digit hours, not half-days, for tight implementation work against
 this settled architecture. The plan's day-scale estimates were correctly
 calibrated to pre-tooling pre-template effort; per-phase amendments
 recorded actuals and the calibration converged across all 12 phases.
+
+---
+
+## Amendment: Prune-by-default (2026-07-09)
+
+**Motivation.** Session-4 root-cause investigation (see
+`~/.cr/memory/2026-07-09-4.md`) established that `lyre update` was
+*additive by design*: `mergeFreshIntoExisting` refreshed existing decls
+(source-wins on sig/pos, existing-wins on prose) and ADDED new decls, but
+NEVER removed decls that had been deleted from source. Orphans lingered in
+the `.lyric` until `verify` flagged them as drift. The plan repeatedly
+deferred cleanup to "a future `--prune` flag (Phase 4/6)" (see the two
+[SUPERSEDED] notes above at the Go and TS merge-policy bullets).
+
+This bit us concretely: when splitting the Leadfoot `investigation.go.lyric`
+per-CL, the reduction was stable ONLY because `hg prev` happened to remove
+the Phase-3 `.go` files from disk; had they been present, `update`'s dir
+scan would have silently re-added the orphaned decls. The mental model
+("update reconciles the `.lyric` to source") did not match reality.
+
+**Decision (Bill, verbatim).** *"Let's not have a `--prune` flag. Let's
+prune by default when we update."* Prune-by-default supersedes every
+deferred-`--prune` note in this plan.
+
+**What shipped.**
+- New shared helper `extract.PruneOrphans(existing, fresh) []string` in
+  `pkg/extract/extract.go`. Language-agnostic (the four
+  `mergeFreshIntoExisting` implementations differ only in cosmetic labels
+  and `IsClass` handling). Deletes decls present in `existing` but absent
+  from freshly-extracted `fresh`: top-level structs/classes, interfaces,
+  functions, typedefs, AND methods within surviving structs/interfaces.
+  Nil-safe; returns sorted removed-labels. (Fields were already reconciled
+  by the existing field-rebuild during merge.)
+- Wired into all four extractors' `mergeFreshIntoExisting`
+  (golang/python/typescript/lyric): each now returns `(added, removed
+  []string)` and calls `PruneOrphans` before returning. The four
+  `Update*` funcs (`UpdateGo`/`UpdatePy`/`UpdateTs`/`UpdateLy`) changed
+  signature from `(added []string, err error)` to `(added, removed
+  []string, err error)`.
+- `cmd/lyre/main.go`: new `reportUpdate(path, added, removed)` helper
+  prints `+ added` / `- pruned` lines (and "up to date" only when BOTH are
+  empty); the four `cmdUpdate` branches use it.
+- The old "NOT pruned" doc comments on each `mergeFreshIntoExisting` were
+  removed.
+
+**Tests.** `TestPruneOrphans` + `TestPruneOrphans_NoOrphans` +
+`TestPruneOrphans_NilSafe` (pkg/extract; every decl kind + method pruning +
+survivor integrity + sorted output). End-to-end
+`TestUpdateGo_PrunesRemovedExport` (incl. `VerifyGo`-clean-after-prune),
+`TestUpdatePy_PrunesRemovedExport`, `TestUpdateTs_PrunesRemovedExport`. All
+16 pre-existing `Update*` call sites updated for the new 3-return signature.
+`go test ./...` green; lyre's own five `.lyric` verify `0/0` and lint `0`.
+
+**CDD upkeep.** The now-FALSE invariant in `golang.go.lyric` ("UpdateGo
+never prunes deleted declarations") and its "non-destructive" merge-algorithm
+prose were rewritten to describe prune-by-default (a wrong invariant is
+worse than none), retargeted `verified-by: TestUpdateGo_PrunesRemovedExport`.
+Added a new test-backed invariant "update prunes declarations deleted from
+source" (`verified-by: TestPruneOrphans`) to `extract.go.lyric`.
+
+**Note.** `verify`'s orphan-detection path still exists and is
+complementary (it reports orphans when source files are present on disk),
+but that path remains UNTESTED (a real gap noted in session 4) — a
+low-priority follow-up.

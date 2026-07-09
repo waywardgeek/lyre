@@ -458,7 +458,7 @@ func TestUpdateLy_AddsNewExport(t *testing.T) {
 		t.Fatalf("writing extended source: %v", err)
 	}
 
-	added, err := lyric.UpdateLy(outPath)
+	added, _, err := lyric.UpdateLy(outPath)
 	if err != nil {
 		t.Fatalf("UpdateLy: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestUpdateLy_AlreadyUpToDate(t *testing.T) {
 	requireExtractor(t)
 	dir := writeTempLy(t, sampleSource)
 	outPath := generateAndWrite(t, dir)
-	added, err := lyric.UpdateLy(outPath)
+	added, _, err := lyric.UpdateLy(outPath)
 	if err != nil {
 		t.Fatalf("UpdateLy: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestUpdateLy_PreservesHumanProse(t *testing.T) {
 		[]byte(strings.TrimSuffix(sampleSource, "}\n")+extraFunc+"}\n"), 0644); err != nil {
 		t.Fatalf("writing extended source: %v", err)
 	}
-	if _, err := lyric.UpdateLy(outPath); err != nil {
+	if _, _, err := lyric.UpdateLy(outPath); err != nil {
 		t.Fatalf("UpdateLy: %v", err)
 	}
 
@@ -548,7 +548,7 @@ func TestUpdateLy_RefreshesPositionsAndSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shapes.ly"), []byte(shifted), 0644); err != nil {
 		t.Fatalf("writing shifted source: %v", err)
 	}
-	if _, err := lyric.UpdateLy(outPath); err != nil {
+	if _, _, err := lyric.UpdateLy(outPath); err != nil {
 		t.Fatalf("UpdateLy: %v", err)
 	}
 

@@ -138,7 +138,7 @@ module python
     source: python.go:58
     why: "Severity levels for verification findings."
 
-  func UpdatePy(lyricPath string) (added []string, err error)
+  func UpdatePy(lyricPath string) (added, removed []string, err error)
     source: python.go:398
     why: "UpdatePy refreshes lyricPath: re-extracts signatures/positions from"
 

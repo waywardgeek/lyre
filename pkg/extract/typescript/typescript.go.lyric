@@ -180,7 +180,7 @@ module typescript
     source: typescript.go:54
     why: "Severity classifies a verification Finding as Error, Warning, or Info."
 
-  func UpdateTs(lyricPath string) (added []string, err error)
+  func UpdateTs(lyricPath string) (added, removed []string, err error)
     source: typescript.go:413
     why: "UpdateTs refreshes lyricPath from source while preserving all human-authored prose, returning the list of newly added exports."
 

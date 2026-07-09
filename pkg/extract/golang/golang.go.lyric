@@ -20,14 +20,16 @@ module golang
 
   doc "The Merge Algorithm":
     """
-    mergeFreshIntoExisting performs the non-destructive update. Signatures and
+    mergeFreshIntoExisting reconciles the .lyric with source. Signatures and
     positions are always refreshed from the fresh extraction. Per-decl prose
     follows the source-of-truth policy: a Go source doc comment overwrites the
     .lyric why:; where the source has no comment, existing .lyric prose is
     kept. Module-level metadata (module why:, named doc blocks, invariants) is
     treated as purely human-curated and is always preserved. Per-field docs
     fall back to existing .lyric content only when fresh extraction supplies
-    none.
+    none. New exports are added; declarations no longer exported by source are
+    pruned by default (extract.PruneOrphans), so the .lyric stays in exact sync
+    with the source's public surface.
     """
 
   doc "Signature and Type Normalization":
@@ -93,12 +95,15 @@ module golang
     per-field doc.
     """
 
-  invariant "UpdateGo never prunes deleted declarations":
-    procedural
+  invariant "UpdateGo prunes declarations deleted from source":
+    verified-by: TestUpdateGo_PrunesRemovedExport
     """
-    Declarations present in the .lyric but absent from source are NOT removed
-    by UpdateGo (a --prune option is planned for a later phase); VerifyGo
-    reports them as drift instead.
+    Declarations present in the .lyric but absent from freshly-extracted source
+    are removed by UpdateGo (prune-by-default, via extract.PruneOrphans),
+    including methods within surviving structs/interfaces. Their human prose is
+    discarded with them since the decl is gone from source. This keeps the
+    .lyric in exact sync with the source's exported surface; VerifyGo would
+    otherwise report such orphans as drift.
     """
 
   func BuildSignature(fn *ast.FuncDecl, fset *token.FileSet) string
@@ -163,7 +168,7 @@ module golang
     source: golang.go:198
     why: "TypeString converts a Go AST type expression to a string representation."
 
-  func UpdateGo(lyricPath string) (added []string, err error)
+  func UpdateGo(lyricPath string) (added, removed []string, err error)
     source: ldd.go:262
     why: "UpdateGo refreshes lyricPath by re-extracting signatures/positions from Go source while preserving all human prose."
 
