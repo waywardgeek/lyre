@@ -481,3 +481,96 @@ func TestUpdateGo_PrunesRemovedExport(t *testing.T) {
 		t.Errorf("expected clean verify after prune, got %d errors", res.ErrorCount())
 	}
 }
+
+// TestDiscoverTestFuncs verifies whole-module test discovery for W007:
+// Test/Benchmark/Fuzz/Example funcs are collected across packages; non-test
+// funcs, method receivers, and vendored/skipped trees are excluded; and a
+// non-compiling _test.go is skipped rather than aborting discovery.
+func TestDiscoverTestFuncs(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("go.mod", "module example.com/w007\n\ngo 1.21\n")
+	// Package a: a real test, a benchmark, a helper (not a test), and a
+	// method named like a test (must be excluded — has a receiver).
+	write("a/a_test.go", `package a
+import "testing"
+func TestAlpha(t *testing.T) {}
+func BenchmarkAlpha(b *testing.B) {}
+func helper() {}
+type S struct{}
+func (S) TestMethodShaped() {}
+`)
+	// Package b in a different directory: proves whole-module (not per-dir)
+	// scope, plus Fuzz/Example prefixes.
+	write("b/nested/b_test.go", `package nested
+import "testing"
+func FuzzBeta(f *testing.F) {}
+func ExampleBeta() {}
+`)
+	// A non-test .go file must contribute nothing.
+	write("a/a.go", `package a
+func TestLooksLikeATestButNotInTestFile() {}
+`)
+	// A non-compiling _test.go must be skipped, not fatal.
+	write("c/broken_test.go", "package c\nthis is not valid go\n")
+	// vendor/ must be skipped entirely.
+	write("vendor/x/x_test.go", `package x
+import "testing"
+func TestVendored(t *testing.T) {}
+`)
+
+	// Start discovery from a nested package dir; it must walk up to go.mod.
+	got, err := golang.DiscoverTestFuncs(filepath.Join(root, "b", "nested"))
+	if err != nil {
+		t.Fatalf("DiscoverTestFuncs: %v", err)
+	}
+
+	want := map[string]bool{
+		"TestAlpha":      true,
+		"BenchmarkAlpha": true,
+		"FuzzBeta":       true,
+		"ExampleBeta":    true,
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("expected test %q to be discovered; got %v", name, got)
+		}
+	}
+	for _, bad := range []string{
+		"helper",                             // non-test func
+		"TestMethodShaped",                   // method receiver, not top-level
+		"TestLooksLikeATestButNotInTestFile", // in a non-_test.go file
+		"TestVendored",                       // under vendor/
+	} {
+		if got[bad] {
+			t.Errorf("did not expect %q to be discovered", bad)
+		}
+	}
+}
+
+// TestDiscoverTestFuncs_NoGoMod falls back to scanning startDir when no
+// enclosing go.mod exists, still finding tests there.
+func TestDiscoverTestFuncs_NoGoMod(t *testing.T) {
+	root := t.TempDir() // no go.mod anywhere up to the OS temp root's module, but
+	// t.TempDir is under /tmp which has no go.mod, so moduleRoot falls back to root.
+	if err := os.WriteFile(filepath.Join(root, "z_test.go"), []byte(
+		"package z\nimport \"testing\"\nfunc TestZeta(t *testing.T) {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := golang.DiscoverTestFuncs(root)
+	if err != nil {
+		t.Fatalf("DiscoverTestFuncs: %v", err)
+	}
+	if !got["TestZeta"] {
+		t.Errorf("expected TestZeta to be discovered; got %v", got)
+	}
+}

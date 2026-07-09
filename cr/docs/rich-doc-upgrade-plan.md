@@ -1062,11 +1062,11 @@ runs 8 language-agnostic checks against the `*extract.PackageInfo`.
   `SignatureText` matches a key in `p.TypeDefs`. Imperfect — won't catch
   enum types defined in another package — but a good starting heuristic
   with no language-specific machinery.
-- **W007 test discovery deferred to Phase 4.5.** CLI passes
-  `Opts{KnownTests: nil}`, so W007 is dormant in CLI use. The
-  programmatic API exercises it (used by `TestLint_W007_*`). Future
-  Phase 4.5 will scan sibling `*_test.go` / `*_test.py` / etc. for test
-  function names.
+- **W007 test discovery — SHIPPED 2026-07-09** (see Amendment: W007 test
+  discovery). The CLI now discovers Go test-function names module-wide
+  (`golang.DiscoverTestFuncs`) and passes them as `Opts.KnownTests` for
+  Go-source `.lyric` files, so W007 is active in CLI use. Non-Go `.lyric`
+  files still pass nil (dormant) until per-language discovery exists.
 - **Deterministic output**: findings sorted by `(Code, Where)`. Methods
   / fields / typedefs iterated via sorted-key helpers.
 - **One why: is enough to suppress W004.** The check fires only if NO
@@ -1441,3 +1441,51 @@ justify a fifth verb on the CLI.
 `commands` prefix-matcher and `usage` text, the header doc-comment line, and
 the `cmdFmt` stub function. `go build ./...` and `go test ./...` stay green.
 The CLI surface is now `verify` / `update` / `gen` / `lint` / `help`.
+
+---
+
+## Amendment: W007 test discovery (2026-07-09)
+
+**Motivation.** W007 ("`verified-by:` references a test that doesn't exist")
+was fully implemented and unit-tested in `pkg/lint`, but *dormant in real
+use*: `cmdLint` passed `Opts{KnownTests: nil}`, so the CLI never validated
+that the tests named in `verified-by:` clauses actually exist. That left the
+entire CDD discipline resting on unchecked pointers — an invariant claiming
+to be test-backed by `TestFoo` was indistinguishable from one whose `TestFoo`
+had been renamed or deleted. An invariant that *claims* verification it
+doesn't have is worse than an honest `procedural` one.
+
+**What shipped.**
+- `golang.DiscoverTestFuncs(startDir) (map[string]bool, error)` in
+  `pkg/extract/golang/ldd.go`: walks up to the enclosing `go.mod`, then scans
+  the whole module for top-level `Test*/Benchmark*/Fuzz*/Example*` functions
+  in `*_test.go` files. Excludes method receivers and non-`_test.go` files;
+  skips `vendor/`, `node_modules/`, `.git/`; skips (does not abort on)
+  non-compiling test files; falls back to `startDir` when no `go.mod` exists.
+- `cmdLint` now calls it (memoized per directory) and passes the result as
+  `Opts.KnownTests` — but **only for Go-source `.lyric` files**
+  (`extract.DetectLanguage(path) == "go"`). For py/ts/ly `.lyric` it passes
+  nil, keeping W007 dormant rather than emitting false positives from a
+  discovery mechanism those languages don't have yet.
+
+**Design rationale — module-wide, not package-local.** A `.lyric` invariant
+may legitimately be verified by a test in another package. Scoping discovery
+to the `.lyric`'s own directory would make W007 report false dangling
+references. A linter that lies is worse than one that stays silent, so
+discovery errs toward completeness (whole module) over locality.
+
+**Tests.** `TestDiscoverTestFuncs` (module-wide collection across packages;
+excludes helpers, method receivers, non-`_test.go` funcs, and `vendor/`;
+walks up to `go.mod` from a nested dir) and `TestDiscoverTestFuncs_NoGoMod`
+(fallback scan). Proven end-to-end: a probe `.lyric` with a bogus
+`verified-by:` produced `[WARNING W007] ... no such test in the project`,
+while all nine of lyre's real `.go.lyric` files lint clean with W007 active.
+
+**CDD upkeep.** Added invariant "W007 test discovery is module-wide, not
+package-local" (verified-by `TestDiscoverTestFuncs`,
+`TestDiscoverTestFuncs_NoGoMod`) to `golang.go.lyric`; updated the stale
+"(the CLI default)" note in `lint.go.lyric`'s W007-dormancy invariant to
+describe the new Go-active / other-dormant split.
+
+**Remaining.** Per-language test discovery (Python `def test_*`, TS test
+frameworks) so W007 activates for non-Go `.lyric` files.

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/waywardgeek/lyre/pkg/cdd"
 	"github.com/waywardgeek/lyre/pkg/extract"
 	golang "github.com/waywardgeek/lyre/pkg/extract/golang"
 	lyricext "github.com/waywardgeek/lyre/pkg/extract/lyric"
@@ -21,7 +22,6 @@ import (
 	tsext "github.com/waywardgeek/lyre/pkg/extract/typescript"
 	"github.com/waywardgeek/lyre/pkg/gen"
 	"github.com/waywardgeek/lyre/pkg/lint"
-	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 const usage = `Usage: lyre <command> [arguments]
@@ -346,6 +346,7 @@ func genRich(pkgDir, lang string) error {
 	outPath := filepath.Join(absDir, p.Name+"."+ext)
 	return writeGenerated(outPath, cdd.Write(p))
 }
+
 // --- lint ---
 
 // cmdLint runs the language-agnostic linter on one or more .lyric files.
@@ -354,9 +355,12 @@ func genRich(pkgDir, lang string) error {
 // (W001-W008). Exit code is 1 if --fatal-warnings is set and any warning
 // fired; otherwise 0 regardless of warning count.
 //
-// Test-name discovery for W007 is deferred (Phase 4.5). The CLI passes a
-// nil KnownTests set, so W007 is dormant in CLI use but exercisable via
-// the programmatic API.
+// W007 (dangling verified-by:) is enabled for Go-source .lyric files by
+// discovering the module's test-function names (golang.DiscoverTestFuncs) and
+// passing them as Opts.KnownTests. For non-Go .lyric files we pass a nil set,
+// leaving W007 dormant rather than risk false positives from a test-discovery
+// mechanism we don't yet have for that language. Discovery is cached per
+// module root so linting many files in one invocation scans the tree once.
 func cmdLint(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file.lyric> [...]")
@@ -373,6 +377,9 @@ func cmdLint(args []string) error {
 	if len(files) == 0 {
 		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file.lyric> [...]")
 	}
+	// Cache discovered Go test sets by module root so repeated Go files in
+	// the same module reuse a single tree walk.
+	knownTestsByRoot := map[string]map[string]bool{}
 	totalWarnings := 0
 	for _, path := range files {
 		data, err := os.ReadFile(path)
@@ -383,7 +390,11 @@ func cmdLint(args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		r := lint.Lint(pkg, path, lint.Opts{})
+		known, err := knownTestsFor(path, knownTestsByRoot)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		r := lint.Lint(pkg, path, lint.Opts{KnownTests: known})
 		for _, f := range r.Findings {
 			fmt.Println(f)
 		}
@@ -394,6 +405,27 @@ func cmdLint(args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+// knownTestsFor returns the set of test names to cross-reference W007 against
+// for the given .lyric file, or nil to leave W007 dormant. Only Go-source
+// .lyric files get a non-nil set today (see golang.DiscoverTestFuncs). Results
+// are memoized in cache keyed by the .lyric's directory so a whole-module walk
+// happens at most once per directory per invocation.
+func knownTestsFor(path string, cache map[string]map[string]bool) (map[string]bool, error) {
+	if extract.DetectLanguage(path) != "go" {
+		return nil, nil
+	}
+	dir := filepath.Dir(path)
+	if cached, ok := cache[dir]; ok {
+		return cached, nil
+	}
+	known, err := golang.DiscoverTestFuncs(dir)
+	if err != nil {
+		return nil, err
+	}
+	cache[dir] = known
+	return known, nil
 }
 
 // --- legacy update ---

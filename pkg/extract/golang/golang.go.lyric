@@ -106,9 +106,26 @@ module golang
     otherwise report such orphans as drift.
     """
 
+  invariant "W007 test discovery is module-wide, not package-local":
+    verified-by: TestDiscoverTestFuncs, TestDiscoverTestFuncs_NoGoMod
+    """
+    DiscoverTestFuncs walks up to the enclosing go.mod and scans the whole
+    module for Test*/Benchmark*/Fuzz*/Example* functions in *_test.go files,
+    excluding method receivers, non-test files, and vendor/node_modules/.git.
+    Scope is module-wide because a .lyric invariant may be verified by a test
+    in another package; a narrower scope would make lint W007 report false
+    dangling references, and a linter that lies is worse than a silent one.
+    Non-compiling test files are skipped (they define no runnable test); when
+    no go.mod is found, startDir itself is scanned.
+    """
+
   func BuildSignature(fn *ast.FuncDecl, fset *token.FileSet) string
     source: golang.go:316
     why: "BuildSignature produces a Go function signature string from a FuncDecl."
+
+  func DiscoverTestFuncs(startDir string) (map[string]bool, error)
+    source: ldd.go:759
+    why: "DiscoverTestFuncs returns the set of Go test-function names (Test*/Benchmark*/Fuzz*/Example*) declared in *_test.go files across the module containing startDir, powering lint rule W007."
 
   func ExtractDir(dir string) (*extract.PackageInfo, error)
     source: golang.go:18
@@ -119,7 +136,7 @@ module golang
     why: "ExtractFiles parses specific Go files and returns the exported API."
 
   func ExtractGo(srcDir string) (*extract.PackageInfo, error)
-    source: ldd.go:56
+    source: ldd.go:57
     why: "ExtractGo is the v2 front door: it parses every non-test .go file in srcDir"
 
   func ExtractSource(src string, filename string) (*extract.PackageInfo, error)
@@ -131,7 +148,7 @@ module golang
     why: "FindModulePath walks up from dir looking for go.mod and returns the module path."
 
   struct Finding
-    source: ldd.go:468
+    source: ldd.go:469
     why: "Finding is a single verification report."
     field Severity: Severity
       doc: "error/warning/info level of this finding"
@@ -142,10 +159,10 @@ module golang
     field Message: string
       doc: "human-readable description of the drift or issue"
     method String() string
-      source: ldd.go:475
+      source: ldd.go:476
 
   func GenerateGo(srcDir string) (outPath, content string, err error)
-    source: ldd.go:244
+    source: ldd.go:245
     why: "GenerateGo scaffolds the content for a fresh <pkgname>.go.lyric file for srcDir without writing to disk."
 
   func IsExported(name string) bool
@@ -158,10 +175,10 @@ module golang
 
   struct Severity
     method String() string
-      source: ldd.go:455
+      source: ldd.go:456
 
   typedef Severity: int
-    source: ldd.go:447
+    source: ldd.go:448
     why: "Severity is the level of a verification Finding (error, warning, or info)."
 
   func TypeString(expr ast.Expr) string
@@ -169,17 +186,17 @@ module golang
     why: "TypeString converts a Go AST type expression to a string representation."
 
   func UpdateGo(lyricPath string) (added, removed []string, err error)
-    source: ldd.go:262
+    source: ldd.go:263
     why: "UpdateGo refreshes lyricPath by re-extracting signatures/positions from Go source while preserving all human prose."
 
   func VerifyGo(lyricPath string) (*VerifyResult, error)
-    source: ldd.go:413
+    source: ldd.go:414
     why: "VerifyGo detects drift by re-extracting the Go source next to lyricPath and deep-comparing it against the .lyric v2 file."
 
   struct VerifyResult
-    source: ldd.go:442
+    source: ldd.go:443
     why: "VerifyResult holds all findings from a verification run."
     field Findings: []Finding
     method ErrorCount() int
-      source: ldd.go:493
+      source: ldd.go:494
       why: "ErrorCount returns the number of SevError findings."

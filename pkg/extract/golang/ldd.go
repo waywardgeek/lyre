@@ -22,6 +22,7 @@ import (
 	"go/ast"
 	goparser "go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -709,4 +710,89 @@ func stripPackagePrefix(goType string) string {
 		return goType[idx+1:]
 	}
 	return goType
+}
+
+// isTestFuncName reports whether name follows Go's testing-function naming
+// convention (Test*/Benchmark*/Fuzz*/Example*), which is exactly the set a
+// `.lyric` invariant's `verified-by:` clause may legitimately reference.
+func isTestFuncName(name string) bool {
+	for _, prefix := range []string{"Test", "Benchmark", "Fuzz", "Example"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleRoot walks up from startDir until it finds a directory containing a
+// go.mod file and returns it. If none is found before the filesystem root,
+// it returns startDir (absolutized) so discovery still scans something
+// sensible rather than the whole disk.
+func moduleRoot(startDir string) string {
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		return startDir
+	}
+	start := dir
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return start
+		}
+		dir = parent
+	}
+}
+
+// DiscoverTestFuncs returns the set of Go test-function names (Test*/Benchmark*/Fuzz*/Example*) declared in *_test.go files across the module containing startDir, powering lint rule W007.
+//
+// It collects test names module-wide (walking up to go.mod), not just from
+// startDir's package, because a `.lyric` invariant may legitimately be
+// verified by a test in another package. Narrower scoping would produce false
+// W007 positives, and a linter that lies is worse than one that stays silent.
+//
+// vendor/, node_modules/, and .git/ subtrees are skipped. A `*_test.go` file
+// that fails to parse contributes no callable tests and is skipped rather than
+// aborting discovery (a non-compiling test file defines no runnable test).
+func DiscoverTestFuncs(startDir string) (map[string]bool, error) {
+	root := moduleRoot(startDir)
+	tests := map[string]bool{}
+	fset := token.NewFileSet()
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "vendor", "node_modules", ".git":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		file, perr := goparser.ParseFile(fset, path, nil, 0)
+		if perr != nil {
+			// Non-compiling test file: no runnable tests to contribute.
+			return nil
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil { // top-level funcs only, no methods
+				continue
+			}
+			if isTestFuncName(fn.Name.Name) {
+				tests[fn.Name.Name] = true
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("discovering tests under %s: %w", root, walkErr)
+	}
+	return tests, nil
 }

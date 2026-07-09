@@ -102,8 +102,12 @@ module lint
     verified-by: TestLint_W007_DormantWhenNilSet, TestLint_W007_KnownTestSuppresses, TestLint_W007_UnknownTest
     """
     Cross-referencing verified-by: names against real tests requires
-    Opts.KnownTests to be non-nil. When it is nil (the CLI default), W007 never
-    fires, so lint does not report missing tests it cannot know about.
+    Opts.KnownTests to be non-nil. When it is nil, W007 never fires, so lint
+    never reports missing tests it cannot know about. The lyre CLI populates
+    KnownTests for Go-source .lyric files (via golang.DiscoverTestFuncs) so
+    W007 is active there; for other languages it passes nil, keeping W007
+    dormant rather than emitting false positives from a discovery mechanism
+    that does not yet exist for them.
     """
 
   invariant "Every invariant must be tested or marked procedural":
