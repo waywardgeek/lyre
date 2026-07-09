@@ -5,7 +5,7 @@
 //	lyre verify <file.go.lyric|file.lyric> [...]  Check understanding files against source
 //	lyre update <file.go.lyric|file.lyric> [...]  Regenerate auto-generated sections
 //	lyre gen <package-dir>                         Scaffold a new understanding file from source
-//	lyre fmt <file.lyric> [...]                    Format .lyric files
+//	lyre lint <file.lyric> [...]                   Report recoverable quality issues in .lyric files
 package main
 
 import (
@@ -31,10 +31,9 @@ Commands:
   update   <file> [...]          Regenerate auto-generated sections
   gen      <package-dir>         Scaffold a new understanding file from source
   lint     <file.lyric> [...]    Report recoverable quality issues in .lyric files
-  fmt      <file.lyric> [...]    Format .lyric files (Lyric syntax only)
 `
 
-var commands = []string{"verify", "update", "gen", "lint", "fmt", "help"}
+var commands = []string{"verify", "update", "gen", "lint", "help"}
 
 // resolveCommand matches a unique prefix of a command name.
 func resolveCommand(prefix string) (string, error) {
@@ -83,8 +82,6 @@ func main() {
 		err = cmdGen(args)
 	case "lint":
 		err = cmdLint(args)
-	case "fmt":
-		err = cmdFmt(args)
 	case "help":
 		fmt.Print(usage)
 		return
@@ -397,21 +394,6 @@ func cmdLint(args []string) error {
 		os.Exit(1)
 	}
 	return nil
-}
-
-// --- fmt ---
-
-// cmdFmt formats .lyric files in-place.
-//
-// TODO: real implementation. Currently a stub that errors clearly so the
-// build passes. The v2 .lyric format (see cr/docs/rich-doc-upgrade-plan.md)
-// will need a dedicated formatter in pkg/ldd/; this stub will be replaced
-// when that lands.
-func cmdFmt(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: lyre fmt <file.lyric> [...]")
-	}
-	return fmt.Errorf("lyre fmt: not yet implemented (see cr/docs/rich-doc-upgrade-plan.md)")
 }
 
 // --- legacy update ---

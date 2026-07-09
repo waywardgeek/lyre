@@ -13,9 +13,6 @@ session and have regression tests / empirical CR-repo validation.)
   requires teaching extract_api.js to special-case `React.FC` / arrow-
   function-typed const exports and extract the props shape.
 
-- `lyre fmt` is a stub (cmd/lyre/main.go:cmdFmt). Real formatter is
-  blocked on the v2 .lyric formatter living in pkg/cdd/.
-
 - `lyre update` for legacy plain-.lyric files (runUpdate in
   cmd/lyre/main.go) is a stub. Plain .lyric files in old Forge syntax
   are vanishingly rare and will be migrated in Phase 6 of the rich-doc

@@ -1206,11 +1206,12 @@ collapses cleanly:
   `cmd/lyre/main.go`; `pkg/parser` was imported only by `pkg/verifier`.
   Zero remaining consumers.
 
-**`lyre fmt`** stub remains (`cmd/lyre/main.go: cmdFmt`). The v2
-`.lyric` format already round-trips losslessly through
-`pkg/cdd/Parse → Write`; a real `lyre fmt` implementation is a tiny
-follow-up that loops the udd parse/write pipeline over its inputs.
-Not in Phase 6's scope; logged.
+**`lyre fmt`** — **REMOVED 2026-07-09** (see Amendment: Remove `lyre fmt`).
+It was a stub, and a real implementation would have been just
+`pkg/cdd/Parse → Write` with no source consultation — i.e. the write-back
+half of `update` minus the merge. Bill's call: not enough standalone value
+to justify a command on the CLI surface. `update` already re-serializes
+through the canonical `cdd.Write`, so a well-formed repo stays formatted.
 
 **Velocity calibration**: 15 min vs ½-day. The migration pattern
 (`rm <v1>; lyre gen --rich <dir>; commit`) is mechanical and could
@@ -1418,3 +1419,25 @@ source" (`verified-by: TestPruneOrphans`) to `extract.go.lyric`.
 complementary (it reports orphans when source files are present on disk),
 but that path remains UNTESTED (a real gap noted in session 4) — a
 low-priority follow-up.
+
+---
+
+## Amendment: Remove `lyre fmt` (2026-07-09)
+
+**Decision (Bill).** *"That doesn't seem like enough usefulness to me to
+have it complicating the lyre command interface. Please remove it."*
+
+`lyre fmt` had been a stub since the beginning. When we analysed what a real
+implementation would be, it reduced to `cdd.Parse(file) → cdd.Write(file)` —
+the write-back half of `update` with the source-extraction/merge step
+removed. That is a pure re-serialization to canonical form, touching only
+whitespace/ordering, never content. Because `update` already writes through
+the same canonical `cdd.Write`, any repo kept current with `update` is
+already formatted; a standalone `fmt` earns its keep only in the narrow case
+of normalizing a `.lyric` with no source checked out — not enough value to
+justify a fifth verb on the CLI.
+
+**Removed:** the `fmt` case in the command dispatch, the `fmt` entry in the
+`commands` prefix-matcher and `usage` text, the header doc-comment line, and
+the `cmdFmt` stub function. `go build ./...` and `go test ./...` stay green.
+The CLI surface is now `verify` / `update` / `gen` / `lint` / `help`.
