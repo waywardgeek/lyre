@@ -1,0 +1,89 @@
+{
+  "initial_expert_pass": {
+    "pkg/ast": true,
+    "pkg/cdd": true,
+    "pkg/extract": true,
+    "pkg/extract/golang": true,
+    "pkg/extract/lyric": true,
+    "pkg/extract/python": true,
+    "pkg/extract/typescript": true,
+    "pkg/gen": true,
+    "pkg/lint": true
+  },
+  "scout_pass": true,
+  "final_expert_pass": {
+    "pkg/ast": true,
+    "pkg/cdd": true,
+    "pkg/extract": true,
+    "pkg/extract/golang": true,
+    "pkg/extract/lyric": true,
+    "pkg/extract/python": true,
+    "pkg/extract/typescript": true,
+    "pkg/gen": true,
+    "pkg/lint": true
+  },
+  "file_hashes": {
+    "pkg/ast": {
+      "ast.go": "139ed64257cff407d12dbfc7da54c105cd1cd60b62593327bd637af901adf6a6",
+      "expr.go": "91d5d8a6a43cf0f03407c2b1ed264fdb2e0fe424313052759f4eb94f3e8db2a5"
+    },
+    "pkg/cdd": {
+      "parser.go": "61387b8ba9727d519cd2ccab5b756b6c3ef010895d46bc7e65365802cdf2ab34",
+      "parser_test.go": "da1ea33f1fc39e4129a168c267a48af36ac03ede81dce797f0cf9311ad4a4e76",
+      "writer.go": "90492c87a1a80a4b85c798da26e0c427190d48885f3ad7ddb315363efca21946",
+      "writer_test.go": "9ee632c9e37f5750ff870ada366725b54495a8ddabb293e5861afd6c83a9b543"
+    },
+    "pkg/extract": {
+      "extract.go": "f94a1d7ad5a5f0e7eb0dddf7d98e75baf6ae4f39a3ce322f3224dc7201f19c9b",
+      "extract_test.go": "8f320dc99409f24beb1d0ab5f5a067538a3616ce2accd8b8aa90aa557985c99b"
+    },
+    "pkg/extract/golang": {
+      "golang.go": "22ac3f75219e893c96594b14b4d83b7cb18184c669facdffb27519337d4e7e23",
+      "ldd.go": "5d8e28f3ced9b921455300d2020c6c06538120f06b78da0185c24cd829e6c3f3",
+      "ldd_test.go": "1b51078afa60f52e552bbcd38f579fc1af83423a8f073aa96f2b5c914f860091"
+    },
+    "pkg/extract/lyric": {
+      "lyric.go": "277c6cf888dbe74927b2c198bffdf6b40b2437f70eba0fbc9f929262d04bbf27",
+      "lyric_test.go": "707583e3dc5abf698ad70b947d771fe04672d2f1eef035a200142d419708779c"
+    },
+    "pkg/extract/python": {
+      "extract_api.py": "bd43b48f838891fb8387758d97ed830e6a39a33bb312b3f54175b5797f37df1e",
+      "python.go": "a088cf0642e74c0ec91e526e62402e7ae3c4ee3773ef39b2ae5702ffc6fa51ea",
+      "python_test.go": "8ae4bf5e583915497c329556e11f25c4a8c37a6922eff99a31c2393dfd48b495"
+    },
+    "pkg/extract/typescript": {
+      "extract_api.js": "75750dd1500d5bc6ee06d0f49f65ce5cd96f1c4d99c0f3ca94437f056f457d10",
+      "typescript.go": "f9d3e4e42eb806a9ed37fc1065cf16a5348ccc74b059b6ac690095966f8d6d9e",
+      "typescript_test.go": "e4895044f6ce56b9563965909b77a2a67d91ced7216dd8b30069e33b1aea86f9"
+    },
+    "pkg/gen": {
+      "rich.go": "247d8a6fb7c1570e7634291dfb03c33f1a5da06293d359df5ee857bf61c82095",
+      "rich_test.go": "898638273b68bc28a0aea0d0401d92e8dd5432810c2e0b387762e3763a1e7094"
+    },
+    "pkg/lint": {
+      "lint.go": "e474fe15883fc9089c06f84d3fe810d115dec227ad6ae2509cb84bcf04768ca2",
+      "lint_test.go": "6d837530f719fbd80eb14361a36ba5bff26286b8fab2779e3a31899f9110c403"
+    }
+  },
+  "processed_files": [
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/ast/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/cdd/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/golang/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/python/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/lyric/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/typescript/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/gen/design.md",
+    "[initial] /usr/local/google/home/waywardgeek/projects/lyre/pkg/lint/design.md",
+    "[synthesis] project-design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/ast/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/golang/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/cdd/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/python/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/gen/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/lyric/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/lint/design.md",
+    "[refined] /usr/local/google/home/waywardgeek/projects/lyre/pkg/extract/typescript/design.md"
+  ]
+}
