@@ -1567,3 +1567,28 @@ pass-through, mixed file+dir arg ordering, empty-dir error, and
 nonexistent-path error. Dogfood: `lyre verify .` / `lint .` / `update .`
 on lyre's own tree find all 9 `.lyric` files (verify 0/0, lint 0, all up to
 date).
+
+---
+
+## Note: Per-language W007 test discovery — DEFERRED (2026-07-10)
+
+Considered extending W007's test discovery (currently Go-only via
+`golang.DiscoverTestFuncs`) to Python and TypeScript. **Deferred as
+speculative infrastructure**: there are currently **zero** `.py.lyric` or
+`.ts.lyric` files anywhere. (The `verified-by:` clauses in
+`python.go.lyric` / `typescript.go.lyric` reference *Go* test names —
+those files are `.go.lyric` documenting the Go extractor packages, already
+covered by the Go discovery.)
+
+- **Python** would be tractable (pytest `def test_*` in `test_*.py` /
+  `*_test.py`, plus `unittest.TestCase` methods) but has no consumer yet.
+- **TypeScript** is genuinely hard: test "names" are *string literals*
+  passed to `it()` / `test()` / `describe()`, not declarations, so
+  discovery needs the TS compiler and a decision on what `verified-by:`
+  references (the string label? a slug?).
+
+Current behavior is correct and documented: non-Go `.lyric` files pass a
+nil `KnownTests` set, leaving W007 dormant rather than risking false
+positives from a discovery mechanism we don't have. Revisit when the first
+real `.py.lyric` / `.ts.lyric` with `verified-by:` clauses appears — that
+consumer will pin down the naming convention.
