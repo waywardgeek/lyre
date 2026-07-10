@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/waywardgeek/lyre/pkg/cdd"
 	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/extract/typescript"
-	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // sampleSource is a simple TypeScript module used as test input.

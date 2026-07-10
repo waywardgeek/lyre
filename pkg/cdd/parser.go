@@ -17,7 +17,7 @@ func Parse(text, filename string) (*extract.PackageInfo, error) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 
 	p := &parser{
-		file:    filename,
+		file:     filename,
 		rawLines: strings.Split(text, "\n"),
 	}
 	// strings.Split on a string ending with "\n" leaves a trailing "" — drop it.

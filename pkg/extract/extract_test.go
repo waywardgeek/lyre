@@ -346,11 +346,11 @@ func TestPruneOrphans(t *testing.T) {
 // TestPruneOrphans_NoOrphans returns nothing when source and .lyric agree.
 func TestPruneOrphans_NoOrphans(t *testing.T) {
 	p := &PackageInfo{
-		Structs:  map[string]*StructInfo{"A": {Methods: map[string]*FuncInfo{"m": {}}}},
+		Structs:   map[string]*StructInfo{"A": {Methods: map[string]*FuncInfo{"m": {}}}},
 		Functions: map[string]*FuncInfo{"F": {}},
 	}
 	q := &PackageInfo{
-		Structs:  map[string]*StructInfo{"A": {Methods: map[string]*FuncInfo{"m": {}}}},
+		Structs:   map[string]*StructInfo{"A": {Methods: map[string]*FuncInfo{"m": {}}}},
 		Functions: map[string]*FuncInfo{"F": {}},
 	}
 	if got := PruneOrphans(p, q); len(got) != 0 {

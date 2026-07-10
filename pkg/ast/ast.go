@@ -28,18 +28,18 @@ type TypeExpr struct {
 type TypeExprKind int
 
 const (
-	TypeNamed    TypeExprKind = iota // T, Stack<T>, map[K]V
-	TypeOptional                     // T?
-	TypeUnion                        // T | U
-	TypeSequence                     // [T]
-	TypeMap                          // map[K]V
-	TypeTuple                        // (T, U) or (x: T, y: U)
-	TypeFunc                         // T -> U
-	TypeChannel                      // channel<T>
-	TypeGenerator                    // gen T
-	TypeLock                         // lock
-	TypeUnit                         // unit
-	TypeRef                          // ref T — reference (Go *T)
+	TypeNamed     TypeExprKind = iota // T, Stack<T>, map[K]V
+	TypeOptional                      // T?
+	TypeUnion                         // T | U
+	TypeSequence                      // [T]
+	TypeMap                           // map[K]V
+	TypeTuple                         // (T, U) or (x: T, y: U)
+	TypeFunc                          // T -> U
+	TypeChannel                       // channel<T>
+	TypeGenerator                     // gen T
+	TypeLock                          // lock
+	TypeUnit                          // unit
+	TypeRef                           // ref T — reference (Go *T)
 )
 
 var typeExprKindNames = [...]string{
@@ -134,7 +134,7 @@ type Param struct {
 // Single-type: where T: Integer (Variable="T", Constraint="Integer")
 // Relational: where Graph<G, N, E> (Variable="", Constraint="Graph", TypeArgs set)
 type WhereClause struct {
-	Variable   string     // empty for bare relational constraints
+	Variable   string // empty for bare relational constraints
 	Constraint string
 	TypeArgs   []TypeExpr // populated for relational constraints: Graph<G, N, E>
 	Span       Span
@@ -156,7 +156,7 @@ type Annotations struct {
 // FuncDecl is a function or method declaration.
 type FuncDecl struct {
 	Name         string
-	IsPublic     bool // true if declared with `pub`
+	IsPublic     bool   // true if declared with `pub`
 	ReceiverType string // non-empty for multi-class interface methods: func T.method(self)
 	TypeParams   []TypeParam
 	Params       []Param
@@ -235,8 +235,8 @@ type InterfaceDecl struct {
 	Name        string
 	IsPublic    bool // true if declared with `pub`
 	TypeParams  []TypeParam
-	Implements  []string             // composed interfaces (legacy)
-	Embeds      []InterfaceEmbed     // embedded interfaces with type args
+	Implements  []string         // composed interfaces (legacy)
+	Embeds      []InterfaceEmbed // embedded interfaces with type args
 	Methods     []FuncDecl
 	Fields      []InterfaceFieldDecl // default fields: field T.name: Type
 	Destructors []DestructorBlock    // destructor T { ... } blocks
@@ -342,7 +342,7 @@ type TypeAliasDecl struct {
 	Name     string
 	IsPublic bool // true if declared with `pub`
 	Type     TypeExpr
-	Span Span
+	Span     Span
 }
 
 // LyricBlock is the top-level lyric { ... } block.

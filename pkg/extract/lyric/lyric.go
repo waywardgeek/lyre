@@ -34,8 +34,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/cdd"
+	"github.com/waywardgeek/lyre/pkg/extract"
 )
 
 // ExtractBinaryName is the name of the Lyric API extraction tool.

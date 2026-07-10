@@ -8,31 +8,31 @@ import "fmt"
 type ExprKind int
 
 const (
-	ExprIdent     ExprKind = iota // variable/function reference
-	ExprIntLit                    // integer literal
-	ExprFloatLit                  // float literal
-	ExprStringLit                 // string literal
-	ExprStringInterp              // f"hello {name}" — interpolated string
-	ExprBoolLit                   // true/false
-	ExprNil                       // nil
-	ExprCall                      // f(x, y)
-	ExprMethodCall                // obj.method(x, y)
-	ExprFieldAccess               // obj.field
-	ExprIndex                     // xs[i]
-	ExprUnary                     // -x, !x
-	ExprBinary                    // x + y, x && y
-	ExprTupleLit                  // (x, y)
-	ExprListLit                   // [1, 2, 3]
-	ExprMapLit                    // map[K]V{k1: v1, k2: v2}
-	ExprLambda                    // (x: T) -> x + 1
-	ExprMatch                     // match value { ... } as expression
-	ExprStructLit                 // Point{X: 3.0, Y: 4.0}
-	ExprCast                      // <i64>x — type cast
-	ExprUnwrap                    // x! — unwrap optional, panic if nil
-	ExprSlice                     // xs[start:end] — slice expression
-	ExprTry                       // expr? — error propagation, early return on error
-	ExprIs                        // expr is Variant — variant type check, returns bool
-	ExprIfElse                    // if cond { a } else { b } — if as expression
+	ExprIdent        ExprKind = iota // variable/function reference
+	ExprIntLit                       // integer literal
+	ExprFloatLit                     // float literal
+	ExprStringLit                    // string literal
+	ExprStringInterp                 // f"hello {name}" — interpolated string
+	ExprBoolLit                      // true/false
+	ExprNil                          // nil
+	ExprCall                         // f(x, y)
+	ExprMethodCall                   // obj.method(x, y)
+	ExprFieldAccess                  // obj.field
+	ExprIndex                        // xs[i]
+	ExprUnary                        // -x, !x
+	ExprBinary                       // x + y, x && y
+	ExprTupleLit                     // (x, y)
+	ExprListLit                      // [1, 2, 3]
+	ExprMapLit                       // map[K]V{k1: v1, k2: v2}
+	ExprLambda                       // (x: T) -> x + 1
+	ExprMatch                        // match value { ... } as expression
+	ExprStructLit                    // Point{X: 3.0, Y: 4.0}
+	ExprCast                         // <i64>x — type cast
+	ExprUnwrap                       // x! — unwrap optional, panic if nil
+	ExprSlice                        // xs[start:end] — slice expression
+	ExprTry                          // expr? — error propagation, early return on error
+	ExprIs                           // expr is Variant — variant type check, returns bool
+	ExprIfElse                       // if cond { a } else { b } — if as expression
 )
 
 var exprKindNames = [...]string{
@@ -54,9 +54,9 @@ func (k ExprKind) String() string {
 // Expr is any expression node.
 type Expr struct {
 	Kind         ExprKind
-	Data         any  // one of the *Lit, *CallExpr, etc. below
+	Data         any // one of the *Lit, *CallExpr, etc. below
 	Span         Span
-	ResolvedType any  // set by checker: *checker.Type (avoids import cycle via any)
+	ResolvedType any // set by checker: *checker.Type (avoids import cycle via any)
 }
 
 // IdentExpr is a variable or function reference by name.
@@ -94,11 +94,11 @@ type BoolLitExpr struct {
 
 // CallExpr is a function call, f(x, y), with optional type arguments.
 type CallExpr struct {
-	Func              Expr
-	TypeArgs          []TypeExpr // explicit type arguments, e.g. f<int>(x)
-	InferredTypeArgs  []any      // set by checker: []*checker.Type (avoids import cycle via any)
-	Args              []Expr
-	MutArgs           []bool     // parallel to Args: true if arg is passed as `mut`
+	Func             Expr
+	TypeArgs         []TypeExpr // explicit type arguments, e.g. f<int>(x)
+	InferredTypeArgs []any      // set by checker: []*checker.Type (avoids import cycle via any)
+	Args             []Expr
+	MutArgs          []bool // parallel to Args: true if arg is passed as `mut`
 }
 
 // MethodCallExpr is a method call on a receiver, obj.method(x, y).
@@ -147,24 +147,24 @@ type UnaryExpr struct {
 type BinaryOp int
 
 const (
-	OpAdd BinaryOp = iota // +
-	OpSub                 // -
-	OpMul                 // *
-	OpDiv                 // /
-	OpMod                 // %
-	OpEq                  // ==
-	OpNeq                 // !=
-	OpLt                  // <
-	OpLe                  // <=
-	OpGt                  // >
-	OpGe                  // >=
-	OpAnd                 // &&
-	OpOr                  // ||
-	OpBitAnd              // &
-	OpBitOr               // |
-	OpBitXor              // ^
-	OpShl                 // <<
-	OpShr                 // >>
+	OpAdd    BinaryOp = iota // +
+	OpSub                    // -
+	OpMul                    // *
+	OpDiv                    // /
+	OpMod                    // %
+	OpEq                     // ==
+	OpNeq                    // !=
+	OpLt                     // <
+	OpLe                     // <=
+	OpGt                     // >
+	OpGe                     // >=
+	OpAnd                    // &&
+	OpOr                     // ||
+	OpBitAnd                 // &
+	OpBitOr                  // |
+	OpBitXor                 // ^
+	OpShl                    // <<
+	OpShr                    // >>
 )
 
 // BinaryExpr applies a binary operator to two operands, e.g. x + y or x && y.
@@ -242,10 +242,10 @@ type IsExpr struct {
 // IfElseExpr represents if cond { a } else { b } as an expression.
 // Both branches must evaluate to the same type.
 type IfElseExpr struct {
-	Cond     Expr
-	Then     Block // last expression is the value
-	Else     Block // last expression is the value
-	ElseIfs  []ElseIfBranch // optional else-if chains
+	Cond    Expr
+	Then    Block          // last expression is the value
+	Else    Block          // last expression is the value
+	ElseIfs []ElseIfBranch // optional else-if chains
 }
 
 // ElseIfBranch is a single else-if branch within an if-expression.
@@ -338,7 +338,7 @@ type IfStmt struct {
 	Condition  Expr
 	Then       Block
 	ElseIfs    []ElseIf
-	Else       *Block // nil if no else
+	Else       *Block   // nil if no else
 	LetPattern *Pattern // non-nil for if let: if let Variant(x) = expr { ... }
 	LetValue   *Expr    // the expression being matched in if let
 }

@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/waywardgeek/lyre/pkg/cdd"
 	"github.com/waywardgeek/lyre/pkg/extract"
 	"github.com/waywardgeek/lyre/pkg/extract/lyric"
-	"github.com/waywardgeek/lyre/pkg/cdd"
 )
 
 // sampleSource is a small Lyric module exercising:
