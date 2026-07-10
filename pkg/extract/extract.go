@@ -120,6 +120,12 @@ type TypeDefInfo struct {
 	File       string
 	Line       int
 
+	// Methods declared on this named type (e.g. Go's `func (s Severity)
+	// String() string` on `type Severity int`). Keyed by method name. A
+	// typedef with methods is the common Go "stringer" pattern; representing
+	// them here avoids synthesizing a phantom struct to hold the method.
+	Methods map[string]*FuncInfo
+
 	// Rich-doc additions (Phase 1).
 	Why    string // per-decl "why" prose
 	Source string // canonical "file:line" reference; round-trips through .lyric
@@ -411,9 +417,18 @@ func PruneOrphans(existing, fresh *PackageInfo) []string {
 	}
 
 	for name := range existing.TypeDefs {
-		if _, ok := fresh.TypeDefs[name]; !ok {
+		ft, ok := fresh.TypeDefs[name]
+		if !ok {
 			removed = append(removed, "typedef "+name)
 			delete(existing.TypeDefs, name)
+			continue
+		}
+		et := existing.TypeDefs[name]
+		for mn := range et.Methods {
+			if _, ok := ft.Methods[mn]; !ok {
+				removed = append(removed, fmt.Sprintf("method %s.%s", name, mn))
+				delete(et.Methods, mn)
+			}
 		}
 	}
 
@@ -466,5 +481,8 @@ func SeedWhyFromDoc(p *PackageInfo) {
 	}
 	for _, td := range p.TypeDefs {
 		seed(&td.Why, td.Doc)
+		for _, m := range td.Methods {
+			seed(&m.Why, m.Doc)
+		}
 	}
 }

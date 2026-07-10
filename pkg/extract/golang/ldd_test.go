@@ -652,3 +652,62 @@ func TestVerifyGo_OrphanDetection(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractGo_TypedefWithMethods verifies the Go "stringer" pattern
+// (`type Severity int` + `func (Severity) String() string`) documents the
+// method under the typedef instead of synthesizing a phantom struct. It also
+// checks the .lyric round-trips (Write->Parse) and VerifyGo stays clean.
+func TestExtractGo_TypedefWithMethods(t *testing.T) {
+	src := `package sev
+
+// Severity is a level.
+type Severity int
+
+// String renders the severity.
+func (s Severity) String() string { return "" }
+
+// Bump returns the next severity.
+func (s Severity) Bump() Severity { return s }
+`
+	dir := writeTempSource(t, src)
+	p, err := golang.ExtractGo(dir)
+	if err != nil {
+		t.Fatalf("ExtractGo: %v", err)
+	}
+	if _, phantom := p.Structs["Severity"]; phantom {
+		t.Errorf("Severity should be a typedef, not a phantom struct; Structs=%v", p.Structs)
+	}
+	td, ok := p.TypeDefs["Severity"]
+	if !ok {
+		t.Fatalf("expected typedef Severity; TypeDefs=%v", p.TypeDefs)
+	}
+	if td.Underlying != "int" {
+		t.Errorf("underlying: want int, got %q", td.Underlying)
+	}
+	for _, m := range []string{"String", "Bump"} {
+		if _, ok := td.Methods[m]; !ok {
+			t.Errorf("typedef Severity missing method %s; Methods=%v", m, td.Methods)
+		}
+	}
+
+	// Round-trip: Write -> Parse must preserve the typedef method.
+	out := cdd.Write(p)
+	rp, err := cdd.Parse(out, "sev.go.lyric")
+	if err != nil {
+		t.Fatalf("Parse(Write(p)): %v\n---\n%s", err, out)
+	}
+	rtd, ok := rp.TypeDefs["Severity"]
+	if !ok || rtd.Methods["String"] == nil || rtd.Methods["Bump"] == nil {
+		t.Errorf("round-trip lost typedef methods: %+v\n---\n%s", rtd, out)
+	}
+
+	// VerifyGo against the same source must be clean.
+	outPath := generateAndWrite(t, dir)
+	result, err := golang.VerifyGo(outPath)
+	if err != nil {
+		t.Fatalf("VerifyGo: %v", err)
+	}
+	if result.ErrorCount() > 0 {
+		t.Errorf("VerifyGo not clean for typedef+methods: %v", result.Findings)
+	}
+}

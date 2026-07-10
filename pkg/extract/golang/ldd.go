@@ -83,14 +83,25 @@ func ExtractGo(srcDir string) (*extract.PackageInfo, error) {
 	}
 	p.ModuleSource = files
 
+	// Two passes: register all named types first, then attach methods. This
+	// lets a method whose receiver is a typedef (e.g. `func (Severity)
+	// String()` on `type Severity int`) attach to the typedef rather than
+	// synthesizing a phantom struct — regardless of source file/decl order.
 	for _, f := range astFiles {
-		extractGoFile(fset, f, p)
+		extractGoTypes(fset, f, p)
+	}
+	for _, f := range astFiles {
+		extractGoMethods(fset, f, p)
 	}
 	extract.SeedWhyFromDoc(p)
 	return p, nil
 }
 
-func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) {
+// extractGoTypes is pass 1: it registers all exported named types (structs,
+// interfaces, typedefs) and top-level (non-method) functions. Methods are
+// deferred to extractGoMethods so they can be attached once every type is
+// known (see ExtractGo).
+func extractGoTypes(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) {
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
@@ -176,34 +187,60 @@ func extractGoFile(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) 
 			}
 
 		case *ast.FuncDecl:
-			if !IsExported(d.Name.Name) {
-				continue
+			if !IsExported(d.Name.Name) || (d.Recv != nil && len(d.Recv.List) > 0) {
+				continue // methods handled in pass 2
 			}
 			pos := fset.Position(d.Pos())
 			fb := filepath.Base(pos.Filename)
-			src := fmt.Sprintf("%s:%d", fb, pos.Line)
-			fi := &extract.FuncInfo{
+			p.Functions[d.Name.Name] = &extract.FuncInfo{
 				SignatureText: goFuncSigText(d.Name.Name, d.Type),
 				Doc:           docText(d.Doc, nil),
 				File:          fb,
 				Line:          pos.Line,
-				Source:        src,
-			}
-			if d.Recv != nil && len(d.Recv.List) > 0 {
-				recvType := receiverTypeName(d.Recv.List[0].Type)
-				if recvType == "" || !IsExported(recvType) {
-					continue
-				}
-				si, ok := p.Structs[recvType]
-				if !ok {
-					si = extract.NewStructInfo()
-					p.Structs[recvType] = si
-				}
-				si.Methods[d.Name.Name] = fi
-			} else {
-				p.Functions[d.Name.Name] = fi
+				Source:        fmt.Sprintf("%s:%d", fb, pos.Line),
 			}
 		}
+	}
+}
+
+// extractGoMethods is pass 2: it attaches each exported method to its receiver
+// type. If the receiver is a typedef registered in pass 1 (e.g. the Go
+// "stringer" pattern `func (Severity) String()` on `type Severity int`), the
+// method attaches to the typedef. Otherwise it attaches to the struct of that
+// name, creating a bare struct only when no type of that name was found —
+// which happens for methods on types the extractor doesn't otherwise model.
+func extractGoMethods(fset *token.FileSet, file *ast.File, p *extract.PackageInfo) {
+	for _, decl := range file.Decls {
+		d, ok := decl.(*ast.FuncDecl)
+		if !ok || !IsExported(d.Name.Name) || d.Recv == nil || len(d.Recv.List) == 0 {
+			continue
+		}
+		recvType := receiverTypeName(d.Recv.List[0].Type)
+		if recvType == "" || !IsExported(recvType) {
+			continue
+		}
+		pos := fset.Position(d.Pos())
+		fb := filepath.Base(pos.Filename)
+		fi := &extract.FuncInfo{
+			SignatureText: goFuncSigText(d.Name.Name, d.Type),
+			Doc:           docText(d.Doc, nil),
+			File:          fb,
+			Line:          pos.Line,
+			Source:        fmt.Sprintf("%s:%d", fb, pos.Line),
+		}
+		if td, ok := p.TypeDefs[recvType]; ok {
+			if td.Methods == nil {
+				td.Methods = map[string]*extract.FuncInfo{}
+			}
+			td.Methods[d.Name.Name] = fi
+			continue
+		}
+		si, ok := p.Structs[recvType]
+		if !ok {
+			si = extract.NewStructInfo()
+			p.Structs[recvType] = si
+		}
+		si.Methods[d.Name.Name] = fi
 	}
 }
 
@@ -392,6 +429,20 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) (added, remove
 		et.Underlying = ft.Underlying
 		et.File, et.Line, et.Source = ft.File, ft.Line, ft.Source
 		et.Why = extract.PreferFresh(et.Why, ft.Why)
+		// Methods on the named type: refresh (source wins) and add new ones.
+		for mn, fm := range ft.Methods {
+			if et.Methods == nil {
+				et.Methods = map[string]*extract.FuncInfo{}
+			}
+			if em, ok := et.Methods[mn]; ok {
+				em.SignatureText = fm.SignatureText
+				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
+				em.Why = extract.PreferFresh(em.Why, fm.Why)
+			} else {
+				et.Methods[mn] = fm
+				added = append(added, fmt.Sprintf("method %s.%s", name, mn))
+			}
+		}
 	}
 
 	sort.Strings(added)
@@ -594,6 +645,18 @@ func compareTypeDefs(declared, actual *extract.PackageInfo, file, srcStr string,
 		}
 		if !typesMatch(dt.Underlying, at.Underlying) {
 			result.add(SevError, file, srcStr, fmt.Sprintf("typedef %s underlying type mismatch: .lyric=%s, source=%s", name, dt.Underlying, at.Underlying))
+		}
+		// Methods declared on the named type (Go stringer pattern etc.).
+		for _, mn := range sortedKeys(dt.Methods) {
+			dm := dt.Methods[mn]
+			am, ok := at.Methods[mn]
+			if !ok {
+				result.add(SevError, file, srcStr, fmt.Sprintf("typedef %s: method %s not found in source", name, mn))
+				continue
+			}
+			if !sigMatch(dm.SignatureText, am.SignatureText) {
+				result.add(SevError, file, srcStr, fmt.Sprintf("typedef %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
+			}
 		}
 	}
 }

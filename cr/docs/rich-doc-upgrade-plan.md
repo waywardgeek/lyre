@@ -668,14 +668,14 @@ implementation against the locked v2 format.
    codebases — the source extractor produces unqualified names but the
    `.lyric` author may use qualified ones).
 
-**Known wart, not blocking**: Go methods on a typedef receiver (e.g.
+**Known wart, not blocking** — **FIXED 2026-07-09** (see Amendment:
+Methods on typedef receivers). Go methods on a typedef receiver (e.g.
 `func (s Severity) String() string` where `Severity` is `type Severity
-int`) currently produce both a `typedef Severity: int` block AND a
-phantom `struct Severity` block carrying the method. Cosmetically ugly
-but technically informative — verify is clean, round-trip is clean. The
-data model has no `Methods` map on `TypeDefInfo`; a real fix waits until
-we either add one or move methods-on-typedefs into a separate decl
-category. Logged here for the next sprint.
+int`) formerly produced both a `typedef Severity: int` block AND a
+phantom `struct Severity` block carrying the method. `TypeDefInfo` now
+has a `Methods` map; the extractor attaches such methods to the typedef
+(two-pass, so it works regardless of decl order), and the writer/parser/
+verify/merge/prune all handle typedef methods. No more phantom struct.
 
 **Test status**: `go test ./...` green except pre-existing TypeScript
 env failure. `pkg/extract/golang` runs 14 tests, all pass. Self-verify
@@ -1489,3 +1489,43 @@ describe the new Go-active / other-dormant split.
 
 **Remaining.** Per-language test discovery (Python `def test_*`, TS test
 frameworks) so W007 activates for non-Go `.lyric` files.
+
+---
+
+## Amendment: Methods on typedef receivers (2026-07-09)
+
+**Motivation.** The Go "stringer" pattern — a method on a named non-struct
+type, e.g. `func (s Severity) String() string` on `type Severity int` — was
+a long-standing wart: the extractor had nowhere to put the method (only
+structs and interfaces carried a `Methods` map), so it synthesized a phantom
+`struct Severity` to hold it, *alongside* the real `typedef Severity: int`.
+The resulting `.lyric` was factually wrong (it documented a struct that
+doesn't exist) even though verify/round-trip stayed green. For a tool whose
+whole job is faithful documentation of production code, "technically
+informative but says something false" is not good enough.
+
+**What shipped (data model → extractor → writer → parser → verify → merge/prune).**
+- `extract.TypeDefInfo` gains a `Methods map[string]*FuncInfo`.
+- `ExtractGo` is now **two-pass**: `extractGoTypes` registers every named
+  type first, then `extractGoMethods` attaches each method to its receiver.
+  A method whose receiver resolves to a typedef attaches to
+  `TypeDefInfo.Methods`; otherwise to the struct (bare struct created only
+  when no type of that name exists). Two passes make attachment independent
+  of source file / declaration order.
+- `cdd.Write` emits `method` blocks under a `typedef`; the parser accepts
+  `method` in a typedef body (reusing `parseMethodBlock`).
+- `VerifyGo`'s `compareTypeDefs` checks typedef methods (missing / signature
+  mismatch), `UpdateGo`'s merge refreshes+adds them, and
+  `extract.PruneOrphans` prunes typedef methods removed from source.
+- `extract.SeedWhyFromDoc` now seeds `why:` on typedef methods from their Go
+  doc comment (it previously walked only struct/interface methods).
+
+**Repo healed.** Running `lyre update` across lyre's own Go `.lyric` pruned
+the phantom `struct Severity` / `struct *Kind` blocks and re-attached the
+`String()` methods under their typedefs in six files
+(extract/golang, lint, extract/python, extract/typescript, extract/lyric,
+and four `*Kind` typedefs in `pkg/ast`). All `.lyric` verify 0/0 and lint 0.
+
+**Tests.** `TestExtractGo_TypedefWithMethods` proves: no phantom struct, both
+methods present under the typedef, `Write`→`Parse` round-trip preserves them,
+and `VerifyGo` is clean.

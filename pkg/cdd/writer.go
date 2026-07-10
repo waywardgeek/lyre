@@ -325,6 +325,8 @@ func (w *writer) typedefDecl(ind int, name string, t *extract.TypeDefInfo) {
 		w.line(ind, "typedef "+name)
 	}
 	w.declMeta(ind+1, t.Source, t.Why)
+	// Methods declared on the named type (Go stringer pattern etc.).
+	w.methods(ind+1, t.Methods)
 }
 
 // declMeta emits source: and why: lines at the given indent in canonical order.

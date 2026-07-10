@@ -587,6 +587,13 @@ func (p *parser) parseTypedefDecl(ind int, pkg *extract.PackageInfo) error {
 				return err
 			}
 			t.Why = val
+		case "method":
+			if t.Methods == nil {
+				t.Methods = map[string]*extract.FuncInfo{}
+			}
+			if err := p.parseMethodBlock(ind+1, t.Methods); err != nil {
+				return err
+			}
 		default:
 			return p.errf(bLineNum, "unrecognized key %q in typedef body", tok)
 		}
