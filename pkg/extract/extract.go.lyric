@@ -181,19 +181,19 @@ module extract
     field Source: string
       doc: "canonical \"file:line\" reference; refreshed by `lyre update`"
     method FieldSig(name string) (string, bool)
-      source: extract.go:142
+      source: extract.go:148
       why: "FieldSig returns the SignatureText of the named field, if present."
     method HasField(name string) bool
-      source: extract.go:152
+      source: extract.go:158
       why: "HasField reports whether the struct has a field with the given name."
     method SetField(name, sig string)
-      source: extract.go:160
+      source: extract.go:166
       why: "SetField appends or updates a field by name. Order is preserved on update;"
     method SetFieldDoc(name, doc string)
-      source: extract.go:172
+      source: extract.go:178
       why: "SetFieldDoc sets the per-field doc for the named field. Creates the field"
     method FieldNames() []string
-      source: extract.go:183
+      source: extract.go:189
       why: "FieldNames returns the field names in source order."
 
   struct FieldInfo
@@ -247,13 +247,15 @@ module extract
     field Doc: string
     field File: string
     field Line: int
+    field Methods: map[string]*FuncInfo
+      doc: "Methods declared on this named type (e.g. Go's `func (s Severity)"
     field Why: string
       doc: "per-decl \"why\" prose"
     field Source: string
       doc: "canonical \"file:line\" reference; round-trips through .lyric"
 
   struct LDDMeta
-    source: extract.go:129
+    source: extract.go:135
     why: "LDDMeta holds the LDD-specific metadata parsed from structured comments."
     field Source: []string
       doc: "source files this understanding file covers"
@@ -263,41 +265,41 @@ module extract
       doc: "detected language (go, python, typescript, lyric)"
 
   func SortedFieldsByName(fields []FieldInfo) []FieldInfo
-    source: extract.go:193
+    source: extract.go:199
     why: "SortedFieldsByName returns a copy of the field slice sorted alphabetically"
 
   func DetectLanguage(filename string) string
-    source: extract.go:207
+    source: extract.go:213
     why: "DetectLanguage returns the source language from a compound .lyric extension."
 
   func SanitizeModuleName(name string) string
-    source: extract.go:254
+    source: extract.go:260
     why: "SanitizeModuleName converts a directory base name into a valid Lyric"
 
   func NewPackageInfo(name string) *PackageInfo
-    source: extract.go:280
+    source: extract.go:286
     why: "NewPackageInfo creates an initialized PackageInfo."
 
   func NewStructInfo() *StructInfo
-    source: extract.go:292
+    source: extract.go:298
     why: "NewStructInfo creates an initialized StructInfo. Fields starts empty; use"
 
   func NewInterfaceInfo() *InterfaceInfo
-    source: extract.go:299
+    source: extract.go:305
     why: "NewInterfaceInfo creates an initialized InterfaceInfo."
 
   func CleanDocLine(doc string) string
-    source: extract.go:314
+    source: extract.go:320
     why: "CleanDocLine extracts a one-line summary from a multi-line native-source"
 
   func PreferFresh(existing, fresh string) string
-    source: extract.go:343
+    source: extract.go:349
     why: "PreferFresh returns fresh when it is non-empty, else keeps existing. Source"
 
   func PruneOrphans(existing, fresh *PackageInfo) []string
-    source: extract.go:366
+    source: extract.go:372
     why: "PruneOrphans removes declarations present in `existing` but absent from"
 
   func SeedWhyFromDoc(p *PackageInfo)
-    source: extract.go:436
+    source: extract.go:451
     why: "SeedWhyFromDoc populates each declaration's one-line `Why` from its scraped"

@@ -105,9 +105,12 @@ module python
     __all__, extraction is strictly limited to the names it lists.
     """
 
-  func ExtractPy(srcDir string) (*extract.PackageInfo, error)
-    source: python.go:217
-    why: "ExtractPy parses every public .py file in srcDir and returns the public"
+  typedef Severity: int
+    source: python.go:58
+    why: "Severity levels for verification findings."
+    method String() string
+      source: python.go:67
+      why: "String returns the uppercase name of the severity (ERROR, WARNING, INFO)."
 
   struct Finding
     source: python.go:81
@@ -124,19 +127,21 @@ module python
       source: python.go:89
       why: "String renders the finding as \"[SEVERITY] file ↔ source: message\"."
 
+  struct VerifyResult
+    source: python.go:99
+    why: "VerifyResult holds all findings from a verification run; ErrorCount()"
+    field Findings: []Finding
+    method ErrorCount() int
+      source: python.go:113
+      why: "ErrorCount returns the number of SevError findings."
+
+  func ExtractPy(srcDir string) (*extract.PackageInfo, error)
+    source: python.go:217
+    why: "ExtractPy parses every public .py file in srcDir and returns the public"
+
   func GeneratePy(srcDir string) (outPath, content string, err error)
     source: python.go:381
     why: "GeneratePy scaffolds a fresh <dirname>.py.lyric file for srcDir. It does"
-
-  struct Severity
-    why: "Severity is the enum of finding levels (SevError, SevWarning, SevInfo) attached to each Finding."
-    method String() string
-      source: python.go:67
-      why: "String returns the uppercase name of the severity (ERROR, WARNING, INFO)."
-
-  typedef Severity: int
-    source: python.go:58
-    why: "Severity levels for verification findings."
 
   func UpdatePy(lyricPath string) (added, removed []string, err error)
     source: python.go:398
@@ -145,11 +150,3 @@ module python
   func VerifyPy(lyricPath string) (*VerifyResult, error)
     source: python.go:425
     why: "VerifyPy parses lyricPath as a .py.lyric v2 file, re-extracts the"
-
-  struct VerifyResult
-    source: python.go:99
-    why: "VerifyResult holds all findings from a verification run; ErrorCount()"
-    field Findings: []Finding
-    method ErrorCount() int
-      source: python.go:113
-      why: "ErrorCount returns the number of SevError findings."

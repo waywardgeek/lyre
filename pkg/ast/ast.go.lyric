@@ -114,6 +114,122 @@ module ast
     interpolated parts strictly interleave.
     """
 
+  struct Pos
+    source: ast.go:8
+    why: "Pos is a position in source code."
+    field File: string
+    field Line: int
+    field Column: int
+
+  struct Span
+    source: ast.go:15
+    why: "Span is a range in source code."
+    field Start: Pos
+    field End: Pos
+
+  struct TypeExpr
+    source: ast.go:21
+    why: "TypeExpr represents any type expression in Forge."
+    field Kind: TypeExprKind
+    field Data: any
+      doc: "one of NamedType, OptionalType, UnionType, SequenceType, MapType, TupleType, FuncType, ChannelType, or nil for Lock/Unit"
+    field Span: Span
+
+  typedef TypeExprKind: int
+    source: ast.go:28
+    why: "TypeExprKind discriminates the kinds of type expressions."
+    method String() string
+      source: ast.go:51
+      why: "String returns the human-readable name of the type expression kind."
+
+  struct NamedType
+    source: ast.go:59
+    why: "NamedType holds the name and optional type arguments for TypeNamed."
+    field Name: string
+    field Args: []TypeExpr
+
+  struct OptionalType
+    source: ast.go:65
+    why: "OptionalType wraps the inner type for T?."
+    field Inner: TypeExpr
+
+  struct UnionType
+    source: ast.go:70
+    why: "UnionType holds variants for T | U."
+    field Variants: []TypeExpr
+
+  struct SequenceType
+    source: ast.go:75
+    why: "SequenceType holds the element type for [T]."
+    field Elem: TypeExpr
+
+  struct MapType
+    source: ast.go:80
+    why: "MapType holds key and value types for map[K]V."
+    field Key: TypeExpr
+    field Value: TypeExpr
+
+  struct TupleField
+    source: ast.go:86
+    why: "TupleField is a single element in a tuple type."
+    field Name: string
+      doc: "empty for positional"
+    field Type: TypeExpr
+
+  struct TupleType
+    source: ast.go:92
+    why: "TupleType holds fields for (T, U) or (x: T, y: U)."
+    field Fields: []TupleField
+
+  struct FuncType
+    source: ast.go:97
+    why: "FuncType holds parameter and return types for T -> U."
+    field Params: []TypeExpr
+    field Return: TypeExpr
+
+  struct RefType
+    source: ast.go:103
+    why: "RefType holds the inner type for ref T — a reference (maps to Go *T)."
+    field Inner: TypeExpr
+
+  struct ChannelType
+    source: ast.go:108
+    why: "ChannelType holds the element type for channel<T>."
+    field Elem: TypeExpr
+
+  struct GeneratorType
+    source: ast.go:113
+    why: "GeneratorType holds the element type for gen T."
+    field Elem: TypeExpr
+
+  struct TypeParam
+    source: ast.go:118
+    why: "TypeParam is a type parameter declaration like T or T: Comparable."
+    field Name: string
+    field Constraint: string
+      doc: "empty if unconstrained"
+    field Span: Span
+
+  struct Param
+    source: ast.go:125
+    why: "Param is a function parameter."
+    field Name: string
+    field Type: TypeExpr
+    field IsMut: bool
+      doc: "true for `mut self`"
+    field IsSelf: bool
+    field Span: Span
+
+  struct WhereClause
+    source: ast.go:136
+    why: "WhereClause constrains type variables."
+    field Variable: string
+      doc: "empty for bare relational constraints"
+    field Constraint: string
+    field TypeArgs: []TypeExpr
+      doc: "populated for relational constraints: Graph<G, N, E>"
+    field Span: Span
+
   struct Annotations
     source: ast.go:144
     why: "Annotations holds all function/method annotations."
@@ -129,218 +245,6 @@ module ast
       doc: "postconditions"
     field Spawns: bool
     field Pure: bool
-
-  struct AssignStmt
-    source: expr.go:321
-    why: "AssignStmt assigns a value to a target (ident, field access, or index)."
-    field Target: Expr
-      doc: "ident, field access, or index"
-    field Value: Expr
-
-  struct BinaryExpr
-    source: expr.go:171
-    why: "BinaryExpr applies a binary operator to two operands, e.g. x + y or x && y."
-    field Left: Expr
-      doc: "left-hand operand"
-    field Op: BinaryOp
-      doc: "the binary operator"
-    field Right: Expr
-      doc: "right-hand operand"
-
-  typedef BinaryOp: int
-    source: expr.go:147
-    why: "BinaryOp identifies a binary operator (arithmetic, comparison, logical, bitwise)."
-
-  struct Block
-    source: expr.go:303
-    why: "Block is a sequence of statements (function body, if branch, etc.)."
-    field Stmts: []Stmt
-    field Span: Span
-
-  struct BoolLitExpr
-    source: expr.go:91
-    why: "BoolLitExpr is a boolean literal (true or false)."
-    field Value: bool
-
-  struct CallExpr
-    source: expr.go:96
-    why: "CallExpr is a function call, f(x, y), with optional type arguments."
-    field Func: Expr
-    field TypeArgs: []TypeExpr
-      doc: "explicit type arguments, e.g. f<int>(x)"
-    field InferredTypeArgs: []any
-      doc: "set by checker: []*checker.Type (avoids import cycle via any)"
-    field Args: []Expr
-    field MutArgs: []bool
-      doc: "parallel to Args: true if arg is passed as `mut`"
-
-  struct CascadeStmt
-    source: expr.go:467
-    why: "CascadeStmt runs its body on scope exit, like Go's defer, cascade { ... }."
-    field Body: Block
-
-  struct CastExpr
-    source: expr.go:219
-    why: "CastExpr represents <TargetType>expr — explicit type conversion."
-    field TargetType: TypeExpr
-    field Operand: Expr
-
-  struct ChannelType
-    source: ast.go:108
-    why: "ChannelType holds the element type for channel<T>."
-    field Elem: TypeExpr
-
-  struct ClassDecl
-    source: ast.go:183
-    why: "ClassDecl is a class declaration."
-    field Name: string
-    field IsPublic: bool
-      doc: "true if declared with `pub`"
-    field TypeParams: []TypeParam
-    field Where: []WhereClause
-    field Implements: []string
-    field Fields: []Field
-    field Methods: []FuncDecl
-    field Why: string
-    field Source: []string
-    field Span: Span
-
-  struct Comment
-    source: ast.go:380
-    why: "Comment represents a line comment in the source."
-    field Text: string
-      doc: "full text including \"// \" prefix"
-    field Pos: Pos
-      doc: "position of the \"//\""
-
-  struct ConstDecl
-    source: ast.go:370
-    why: "ConstDecl represents a top-level constant: let [mut] NAME: Type = value"
-    field Name: string
-    field Type: *TypeExpr
-      doc: "nil if inferred"
-    field Value: Expr
-    field IsPublic: bool
-    field IsMut: bool
-    field Span: Span
-
-  struct DestructorBlock
-    source: ast.go:256
-    why: "DestructorBlock is a destructor code block in an interface, bound to a type parameter."
-    field TypeParam: string
-      doc: "which type parameter this destructor applies to (e.g. \"P\" or \"C\")"
-    field Body: Block
-      doc: "the code block to append to the concrete class's destroy method"
-    field Span: Span
-
-  struct DocBlock
-    source: ast.go:320
-    why: "DocBlock is a named narrative section."
-    field Section: string
-    field Content: string
-    field Span: Span
-
-  struct ElseIf
-    source: expr.go:347
-    why: "ElseIf is a single else-if branch within an IfStmt."
-    field Condition: Expr
-    field Body: Block
-    field Span: Span
-
-  struct ElseIfBranch
-    source: expr.go:252
-    why: "ElseIfBranch is a single else-if branch within an if-expression."
-    field Cond: Expr
-    field Body: Block
-
-  struct EnumDecl
-    source: ast.go:214
-    why: "EnumDecl is an enum (sum type) declaration."
-    field Name: string
-    field IsPublic: bool
-      doc: "true if declared with `pub`"
-    field TypeParams: []TypeParam
-    field Variants: []EnumVariant
-    field Why: string
-    field Span: Span
-
-  struct EnumVariant
-    source: ast.go:207
-    why: "EnumVariant is a single variant in an enum."
-    field Name: string
-    field Fields: []TupleField
-    field Span: Span
-
-  struct Expr
-    source: expr.go:55
-    why: "Expr is any expression node."
-    field Kind: ExprKind
-    field Data: any
-      doc: "one of the *Lit, *CallExpr, etc. below"
-    field Span: Span
-    field ResolvedType: any
-      doc: "set by checker: *checker.Type (avoids import cycle via any)"
-
-  struct ExprKind
-    why: "Method holder for ExprKind's String, giving each expression-kind tag a human-readable name."
-    method String() string
-      source: expr.go:47
-      why: "String returns the human-readable name of the expression kind."
-
-  typedef ExprKind: int
-    source: expr.go:8
-    why: "ExprKind discriminates expression types."
-
-  struct ExprStmt
-    source: expr.go:332
-    why: "ExprStmt is a bare expression used as a statement (e.g. a function call)."
-    field Expr: Expr
-
-  struct Field
-    source: ast.go:172
-    why: "Field is a struct or class field."
-    field Name: string
-    field IsPublic: bool
-      doc: "true if declared with `pub`"
-    field Type: TypeExpr
-    field Default: *Expr
-      doc: "nil if no default value"
-    field GuardedBy: string
-      doc: "empty if not guarded"
-    field Why: string
-    field Span: Span
-
-  struct FieldAccessExpr
-    source: expr.go:114
-    why: "FieldAccessExpr accesses a named field of a receiver, obj.field."
-    field Receiver: Expr
-    field Field: string
-
-  struct File
-    source: ast.go:386
-    why: "File is the top-level AST node."
-    field Filename: string
-    field Blocks: []LyricBlock
-    field Comments: []Comment
-      doc: "all comments in the file, ordered by position"
-    field Span: Span
-    method DocComment(line int) []Comment
-      source: ast.go:395
-      why: "DocComment returns the contiguous block of comments immediately preceding"
-
-  struct FloatLitExpr
-    source: expr.go:74
-    why: "FloatLitExpr is a floating-point literal, kept as a string to preserve precision."
-    field Value: string
-
-  struct ForStmt
-    source: expr.go:354
-    why: "ForStmt iterates over a collection, for [i,] item in collection."
-    field Var: string
-    field IndexVar: string
-      doc: "optional: for i, x in xs — empty if not used"
-    field Collection: Expr
-    field Body: Block
 
   struct FuncDecl
     source: ast.go:157
@@ -360,105 +264,74 @@ module ast
       doc: "Body is nil in .lyric files, holds the function body in .fg files."
     field Span: Span
 
-  struct FuncType
-    source: ast.go:97
-    why: "FuncType holds parameter and return types for T -> U."
-    field Params: []TypeExpr
-    field Return: TypeExpr
-
-  struct GeneratorType
-    source: ast.go:113
-    why: "GeneratorType holds the element type for gen T."
-    field Elem: TypeExpr
-
-  struct IdentExpr
-    source: expr.go:63
-    why: "IdentExpr is a variable or function reference by name."
+  struct Field
+    source: ast.go:172
+    why: "Field is a struct or class field."
     field Name: string
-
-  struct IdentPattern
-    source: expr.go:446
-    why: "IdentPattern binds a matched value to a name."
-    field Name: string
-
-  struct IfElseExpr
-    source: expr.go:244
-    why: "IfElseExpr represents if cond { a } else { b } as an expression."
-    field Cond: Expr
-    field Then: Block
-      doc: "last expression is the value"
-    field Else: Block
-      doc: "last expression is the value"
-    field ElseIfs: []ElseIfBranch
-      doc: "optional else-if chains"
-
-  struct IfStmt
-    source: expr.go:337
-    why: "IfStmt is an if/else-if/else statement, with optional if-let pattern binding."
-    field Condition: Expr
-    field Then: Block
-    field ElseIfs: []ElseIf
-    field Else: *Block
-      doc: "nil if no else"
-    field LetPattern: *Pattern
-      doc: "non-nil for if let: if let Variant(x) = expr { ... }"
-    field LetValue: *Expr
-      doc: "the expression being matched in if let"
-
-  struct ImplBlock
-    source: ast.go:285
-    why: "ImplBlock maps an interface to concrete types."
-    field InterfaceName: string
-      doc: "\"Graph\", \"DoublyLinked\""
-    field ForType: string
-      doc: "optional: \"impl Printable for Dog\" — the implementing type"
-    field TypeArgs: []TypeExpr
-      doc: "concrete types: <CircuitGraph, Component, Wire>"
-    field Label: string
-      doc: "optional: \"as byEmail\" for disambiguation"
-    field Mappings: []ImplMapping
+    field IsPublic: bool
+      doc: "true if declared with `pub`"
+    field Type: TypeExpr
+    field Default: *Expr
+      doc: "nil if no default value"
+    field GuardedBy: string
+      doc: "empty if not guarded"
+    field Why: string
     field Span: Span
 
-  struct ImplMapping
-    source: ast.go:272
-    why: "ImplMapping is a single mapping inside an impl block."
+  struct ClassDecl
+    source: ast.go:183
+    why: "ClassDecl is a class declaration."
+    field Name: string
+    field IsPublic: bool
+      doc: "true if declared with `pub`"
+    field TypeParams: []TypeParam
+    field Where: []WhereClause
+    field Implements: []string
+    field Fields: []Field
+    field Methods: []FuncDecl
+    field Why: string
+    field Source: []string
+    field Span: Span
+
+  struct StructDecl
+    source: ast.go:197
+    why: "StructDecl is a struct (named tuple) declaration."
+    field Name: string
+    field IsPublic: bool
+      doc: "true if declared with `pub`"
+    field TypeParams: []TypeParam
+    field Fields: []Field
+    field Why: string
+    field Span: Span
+
+  struct EnumVariant
+    source: ast.go:207
+    why: "EnumVariant is a single variant in an enum."
+    field Name: string
+    field Fields: []TupleField
+    field Span: Span
+
+  struct EnumDecl
+    source: ast.go:214
+    why: "EnumDecl is an enum (sum type) declaration."
+    field Name: string
+    field IsPublic: bool
+      doc: "true if declared with `pub`"
+    field TypeParams: []TypeParam
+    field Variants: []EnumVariant
+    field Why: string
+    field Span: Span
+
+  struct InterfaceFieldDecl
+    source: ast.go:226
+    why: "InterfaceFieldDecl is a default field declaration in an interface."
     field TypeParam: string
-      doc: "\"G\", \"N\", \"E\" — the interface type param"
-    field MethodName: string
-      doc: "the method name on the interface side"
-    field Kind: ImplMappingKind
-    field TargetClass: string
-      doc: "\"CircuitGraph\", \"Component\""
-    field TargetMember: string
-      doc: "\"components\", \"outWires\""
-    field InlineFunc: *FuncDecl
-      doc: "full function declaration"
+      doc: "\"P\", \"C\" — which type param this field belongs to"
+    field Name: string
+      doc: "field name (e.g. \"first\", \"next\", \"parent\")"
+    field Type: TypeExpr
+      doc: "field type (may reference other type params)"
     field Span: Span
-
-  typedef ImplMappingKind: int
-    source: ast.go:263
-    why: "ImplMappingKind distinguishes the three forms of impl mappings."
-
-  struct ImportDecl
-    source: ast.go:334
-    why: "ImportDecl is an import statement."
-    field Alias: string
-    field Path: string
-    field Span: Span
-
-  struct IndexExpr
-    source: expr.go:120
-    why: "IndexExpr indexes into a receiver, xs[i]."
-    field Receiver: Expr
-    field Index: Expr
-
-  struct IntLitExpr
-    source: expr.go:68
-    why: "IntLitExpr is an integer literal, kept as a string to support arbitrary widths."
-    field Value: string
-      doc: "keep as string to support i256"
-    field TypeHint: string
-      doc: "\"u8\" for character literals, \"\" for default (i32)"
 
   struct InterfaceDecl
     source: ast.go:234
@@ -488,15 +361,79 @@ module ast
       doc: "type arguments (e.g. P, C)"
     field Span: Span
 
-  struct InterfaceFieldDecl
-    source: ast.go:226
-    why: "InterfaceFieldDecl is a default field declaration in an interface."
+  struct DestructorBlock
+    source: ast.go:256
+    why: "DestructorBlock is a destructor code block in an interface, bound to a type parameter."
     field TypeParam: string
-      doc: "\"P\", \"C\" — which type param this field belongs to"
-    field Name: string
-      doc: "field name (e.g. \"first\", \"next\", \"parent\")"
-    field Type: TypeExpr
-      doc: "field type (may reference other type params)"
+      doc: "which type parameter this destructor applies to (e.g. \"P\" or \"C\")"
+    field Body: Block
+      doc: "the code block to append to the concrete class's destroy method"
+    field Span: Span
+
+  typedef ImplMappingKind: int
+    source: ast.go:263
+    why: "ImplMappingKind distinguishes the three forms of impl mappings."
+
+  struct ImplMapping
+    source: ast.go:272
+    why: "ImplMapping is a single mapping inside an impl block."
+    field TypeParam: string
+      doc: "\"G\", \"N\", \"E\" — the interface type param"
+    field MethodName: string
+      doc: "the method name on the interface side"
+    field Kind: ImplMappingKind
+    field TargetClass: string
+      doc: "\"CircuitGraph\", \"Component\""
+    field TargetMember: string
+      doc: "\"components\", \"outWires\""
+    field InlineFunc: *FuncDecl
+      doc: "full function declaration"
+    field Span: Span
+
+  struct ImplBlock
+    source: ast.go:285
+    why: "ImplBlock maps an interface to concrete types."
+    field InterfaceName: string
+      doc: "\"Graph\", \"DoublyLinked\""
+    field ForType: string
+      doc: "optional: \"impl Printable for Dog\" — the implementing type"
+    field TypeArgs: []TypeExpr
+      doc: "concrete types: <CircuitGraph, Component, Wire>"
+    field Label: string
+      doc: "optional: \"as byEmail\" for disambiguation"
+    field Mappings: []ImplMapping
+    field Span: Span
+
+  typedef RelationKind: int
+    source: ast.go:295
+    why: "RelationKind distinguishes owns from refs."
+
+  struct RelationSide
+    source: ast.go:303
+    why: "RelationSide is one side of a relation."
+    field TypeName: string
+    field TypeArgs: []string
+      doc: "type parameters, e.g. [\"V\"] from Dict<V>"
+    field Label: string
+      doc: "empty if unlabeled"
+
+  struct RelationDecl
+    source: ast.go:310
+    why: "RelationDecl is a relation declaration."
+    field Hint: string
+      doc: "DoublyLinked, ArrayList, Hashed, or empty"
+    field Parent: RelationSide
+    field Kind: RelationKind
+    field Child: RelationSide
+    field IsMany: bool
+      doc: "[Child] vs Child"
+    field Span: Span
+
+  struct DocBlock
+    source: ast.go:320
+    why: "DocBlock is a named narrative section."
+    field Section: string
+    field Content: string
     field Span: Span
 
   struct InvariantDecl
@@ -507,37 +444,21 @@ module ast
       doc: "commit hash, or empty"
     field Span: Span
 
-  struct IsExpr
-    source: expr.go:237
-    why: "IsExpr represents expr is Variant — checks if an enum value is a specific variant."
-    field Operand: Expr
-    field Variant: string
-      doc: "variant name to check against"
+  struct ImportDecl
+    source: ast.go:334
+    why: "ImportDecl is an import statement."
+    field Alias: string
+    field Path: string
+    field Span: Span
 
-  struct LambdaExpr
-    source: expr.go:212
-    why: "LambdaExpr is an anonymous function, (x: T) -> x + 1."
-    field Params: []Param
-    field ReturnType: *TypeExpr
-    field Body: *Block
-      doc: "single expression or block"
-
-  struct ListLitExpr
-    source: expr.go:183
-    why: "ListLitExpr is a list literal, [1, 2, 3]."
-    field Elems: []Expr
-
-  struct LiteralPattern
-    source: expr.go:451
-    why: "LiteralPattern matches against a literal value."
-    field Expr: Expr
-
-  struct LockStmt
-    source: expr.go:409
-    why: "LockStmt acquires a mutex for the duration of its body, lock(mu) { ... }."
-    field Mutex: Expr
-      doc: "the mutex expression"
-    field Body: Block
+  struct TypeAliasDecl
+    source: ast.go:341
+    why: "TypeAliasDecl is a type alias: type Name = OtherType"
+    field Name: string
+    field IsPublic: bool
+      doc: "true if declared with `pub`"
+    field Type: TypeExpr
+    field Span: Span
 
   struct LyricBlock
     source: ast.go:349
@@ -560,39 +481,99 @@ module ast
     field Fake: string
     field Span: Span
 
-  struct MapEntry
-    source: expr.go:188
-    why: "MapEntry is a single key-value pair in a map literal."
-    field Key: Expr
+  struct ConstDecl
+    source: ast.go:370
+    why: "ConstDecl represents a top-level constant: let [mut] NAME: Type = value"
+    field Name: string
+    field Type: *TypeExpr
+      doc: "nil if inferred"
     field Value: Expr
-
-  struct MapLitExpr
-    source: expr.go:194
-    why: "MapLitExpr is a map literal, map[K]V{k1: v1, k2: v2}."
-    field Entries: []MapEntry
-
-  struct MapType
-    source: ast.go:80
-    why: "MapType holds key and value types for map[K]V."
-    field Key: TypeExpr
-    field Value: TypeExpr
-
-  struct MatchArm
-    source: expr.go:374
-    why: "MatchArm is a single arm of a match, with one or more patterns and an optional guard."
-    field Pattern: Pattern
-    field Patterns: []Pattern
-      doc: "additional alternative patterns (pat1 | pat2 | pat3)"
-    field Guard: *Expr
-      doc: "optional: `if <expr>` guard clause"
-    field Body: Block
+    field IsPublic: bool
+    field IsMut: bool
     field Span: Span
 
-  struct MatchStmt
-    source: expr.go:368
-    why: "MatchStmt matches a value against a set of pattern arms."
-    field Value: Expr
-    field Arms: []MatchArm
+  struct Comment
+    source: ast.go:380
+    why: "Comment represents a line comment in the source."
+    field Text: string
+      doc: "full text including \"// \" prefix"
+    field Pos: Pos
+      doc: "position of the \"//\""
+
+  struct File
+    source: ast.go:386
+    why: "File is the top-level AST node."
+    field Filename: string
+    field Blocks: []LyricBlock
+    field Comments: []Comment
+      doc: "all comments in the file, ordered by position"
+    field Span: Span
+    method DocComment(line int) []Comment
+      source: ast.go:395
+      why: "DocComment returns the contiguous block of comments immediately preceding"
+
+  typedef ExprKind: int
+    source: expr.go:8
+    why: "ExprKind discriminates expression types."
+    method String() string
+      source: expr.go:47
+      why: "String returns the human-readable name of the expression kind."
+
+  struct Expr
+    source: expr.go:55
+    why: "Expr is any expression node."
+    field Kind: ExprKind
+    field Data: any
+      doc: "one of the *Lit, *CallExpr, etc. below"
+    field Span: Span
+    field ResolvedType: any
+      doc: "set by checker: *checker.Type (avoids import cycle via any)"
+
+  struct IdentExpr
+    source: expr.go:63
+    why: "IdentExpr is a variable or function reference by name."
+    field Name: string
+
+  struct IntLitExpr
+    source: expr.go:68
+    why: "IntLitExpr is an integer literal, kept as a string to support arbitrary widths."
+    field Value: string
+      doc: "keep as string to support i256"
+    field TypeHint: string
+      doc: "\"u8\" for character literals, \"\" for default (i32)"
+
+  struct FloatLitExpr
+    source: expr.go:74
+    why: "FloatLitExpr is a floating-point literal, kept as a string to preserve precision."
+    field Value: string
+
+  struct StringLitExpr
+    source: expr.go:79
+    why: "StringLitExpr is a plain string literal."
+    field Value: string
+
+  struct StringInterpExpr
+    source: expr.go:86
+    why: "StringInterpExpr represents f\"hello {name}, you are {age}\""
+    field Parts: []Expr
+      doc: "alternating ExprStringLit and other expressions"
+
+  struct BoolLitExpr
+    source: expr.go:91
+    why: "BoolLitExpr is a boolean literal (true or false)."
+    field Value: bool
+
+  struct CallExpr
+    source: expr.go:96
+    why: "CallExpr is a function call, f(x, y), with optional type arguments."
+    field Func: Expr
+    field TypeArgs: []TypeExpr
+      doc: "explicit type arguments, e.g. f<int>(x)"
+    field InferredTypeArgs: []any
+      doc: "set by checker: []*checker.Type (avoids import cycle via any)"
+    field Args: []Expr
+    field MutArgs: []bool
+      doc: "parallel to Args: true if arg is passed as `mut`"
 
   struct MethodCallExpr
     source: expr.go:105
@@ -604,109 +585,17 @@ module ast
     field MutArgs: []bool
       doc: "parallel to Args: true if arg is passed as `mut`"
 
-  struct NamedType
-    source: ast.go:59
-    why: "NamedType holds the name and optional type arguments for TypeNamed."
-    field Name: string
-    field Args: []TypeExpr
+  struct FieldAccessExpr
+    source: expr.go:114
+    why: "FieldAccessExpr accesses a named field of a receiver, obj.field."
+    field Receiver: Expr
+    field Field: string
 
-  struct OptionalType
-    source: ast.go:65
-    why: "OptionalType wraps the inner type for T?."
-    field Inner: TypeExpr
-
-  struct Param
-    source: ast.go:125
-    why: "Param is a function parameter."
-    field Name: string
-    field Type: TypeExpr
-    field IsMut: bool
-      doc: "true for `mut self`"
-    field IsSelf: bool
-    field Span: Span
-
-  struct Pattern
-    source: expr.go:438
-    why: "Pattern is any pattern node, used in match arms, if-let, and let..else."
-    field Kind: PatternKind
-    field Data: any
-    field Span: Span
-    field ResolvedType: any
-      doc: "set by checker for union type patterns"
-
-  struct PatternKind
-    why: "Method holder for PatternKind's String, giving each pattern-kind tag a human-readable name."
-    method String() string
-      source: expr.go:430
-      why: "String returns the human-readable name of the pattern kind."
-
-  typedef PatternKind: int
-    source: expr.go:417
-    why: "PatternKind discriminates pattern types used in match arms and let bindings."
-
-  struct Pos
-    source: ast.go:8
-    why: "Pos is a position in source code."
-    field File: string
-    field Line: int
-    field Column: int
-
-  struct RefType
-    source: ast.go:103
-    why: "RefType holds the inner type for ref T — a reference (maps to Go *T)."
-    field Inner: TypeExpr
-
-  struct RelationDecl
-    source: ast.go:310
-    why: "RelationDecl is a relation declaration."
-    field Hint: string
-      doc: "DoublyLinked, ArrayList, Hashed, or empty"
-    field Parent: RelationSide
-    field Kind: RelationKind
-    field Child: RelationSide
-    field IsMany: bool
-      doc: "[Child] vs Child"
-    field Span: Span
-
-  typedef RelationKind: int
-    source: ast.go:295
-    why: "RelationKind distinguishes owns from refs."
-
-  struct RelationSide
-    source: ast.go:303
-    why: "RelationSide is one side of a relation."
-    field TypeName: string
-    field TypeArgs: []string
-      doc: "type parameters, e.g. [\"V\"] from Dict<V>"
-    field Label: string
-      doc: "empty if unlabeled"
-
-  struct ReturnStmt
-    source: expr.go:327
-    why: "ReturnStmt returns from a function, optionally with a value."
-    field Value: *Expr
-      doc: "nil for bare return"
-
-  struct SelectCase
-    source: expr.go:398
-    why: "SelectCase is a single case (send, receive, or default) within a SelectStmt."
-    field IsDefault: bool
-    field BindVar: string
-      doc: "optional: `case val = ch.receive()`"
-    field Expr: *Expr
-      doc: "nil for default case"
-    field Body: Block
-    field Span: Span
-
-  struct SelectStmt
-    source: expr.go:393
-    why: "SelectStmt multiplexes over channel operations, select { case ... }."
-    field Cases: []SelectCase
-
-  struct SequenceType
-    source: ast.go:75
-    why: "SequenceType holds the element type for [T]."
-    field Elem: TypeExpr
+  struct IndexExpr
+    source: expr.go:120
+    why: "IndexExpr indexes into a receiver, xs[i]."
+    field Receiver: Expr
+    field Index: Expr
 
   struct SliceExpr
     source: expr.go:126
@@ -717,56 +606,56 @@ module ast
     field High: *Expr
       doc: "nil = to end"
 
-  struct Span
-    source: ast.go:15
-    why: "Span is a range in source code."
-    field Start: Pos
-    field End: Pos
+  typedef UnaryOp: int
+    source: expr.go:133
+    why: "UnaryOp identifies a unary operator (negation, logical not)."
 
-  struct SpawnStmt
-    source: expr.go:383
-    why: "SpawnStmt starts a new concurrent task, spawn { ... }."
-    field Body: Block
+  struct UnaryExpr
+    source: expr.go:141
+    why: "UnaryExpr applies a unary operator to an operand, e.g. -x or !x."
+    field Op: UnaryOp
+    field Operand: Expr
 
-  struct Stmt
-    source: expr.go:296
-    why: "Stmt is any statement node."
-    field Kind: StmtKind
-    field Data: any
-      doc: "one of the *Stmt types below"
-    field Span: Span
+  typedef BinaryOp: int
+    source: expr.go:147
+    why: "BinaryOp identifies a binary operator (arithmetic, comparison, logical, bitwise)."
 
-  struct StmtKind
-    why: "Method holder for StmtKind's String, giving each statement-kind tag a human-readable name."
-    method String() string
-      source: expr.go:288
-      why: "String returns the human-readable name of the statement kind."
+  struct BinaryExpr
+    source: expr.go:171
+    why: "BinaryExpr applies a binary operator to two operands, e.g. x + y or x && y."
+    field Left: Expr
+      doc: "left-hand operand"
+    field Op: BinaryOp
+      doc: "the binary operator"
+    field Right: Expr
+      doc: "right-hand operand"
 
-  typedef StmtKind: int
-    source: expr.go:260
-    why: "StmtKind discriminates statement types."
+  struct TupleLitExpr
+    source: expr.go:178
+    why: "TupleLitExpr is a tuple literal, (x, y)."
+    field Elems: []Expr
 
-  struct StringInterpExpr
-    source: expr.go:86
-    why: "StringInterpExpr represents f\"hello {name}, you are {age}\""
-    field Parts: []Expr
-      doc: "alternating ExprStringLit and other expressions"
+  struct ListLitExpr
+    source: expr.go:183
+    why: "ListLitExpr is a list literal, [1, 2, 3]."
+    field Elems: []Expr
 
-  struct StringLitExpr
-    source: expr.go:79
-    why: "StringLitExpr is a plain string literal."
-    field Value: string
+  struct MapEntry
+    source: expr.go:188
+    why: "MapEntry is a single key-value pair in a map literal."
+    field Key: Expr
+    field Value: Expr
 
-  struct StructDecl
-    source: ast.go:197
-    why: "StructDecl is a struct (named tuple) declaration."
+  struct MapLitExpr
+    source: expr.go:194
+    why: "MapLitExpr is a map literal, map[K]V{k1: v1, k2: v2}."
+    field Entries: []MapEntry
+
+  struct StructLitField
+    source: expr.go:199
+    why: "StructLitField is a single named field in a struct literal."
     field Name: string
-    field IsPublic: bool
-      doc: "true if declared with `pub`"
-    field TypeParams: []TypeParam
-    field Fields: []Field
-    field Why: string
-    field Span: Span
+    field Value: Expr
 
   struct StructLitExpr
     source: expr.go:205
@@ -776,93 +665,74 @@ module ast
       doc: "generic type args, e.g. Pair<string>"
     field Fields: []StructLitField
 
-  struct StructLitField
-    source: expr.go:199
-    why: "StructLitField is a single named field in a struct literal."
-    field Name: string
-    field Value: Expr
+  struct LambdaExpr
+    source: expr.go:212
+    why: "LambdaExpr is an anonymous function, (x: T) -> x + 1."
+    field Params: []Param
+    field ReturnType: *TypeExpr
+    field Body: *Block
+      doc: "single expression or block"
+
+  struct CastExpr
+    source: expr.go:219
+    why: "CastExpr represents <TargetType>expr — explicit type conversion."
+    field TargetType: TypeExpr
+    field Operand: Expr
+
+  struct UnwrapExpr
+    source: expr.go:225
+    why: "UnwrapExpr represents expr! — unwrap an optional value, panic if nil."
+    field Operand: Expr
 
   struct TryExpr
     source: expr.go:231
     why: "TryExpr represents expr? — error propagation. The inner expression must return"
     field Operand: Expr
 
-  struct TupleField
-    source: ast.go:86
-    why: "TupleField is a single element in a tuple type."
-    field Name: string
-      doc: "empty for positional"
-    field Type: TypeExpr
+  struct IsExpr
+    source: expr.go:237
+    why: "IsExpr represents expr is Variant — checks if an enum value is a specific variant."
+    field Operand: Expr
+    field Variant: string
+      doc: "variant name to check against"
 
-  struct TupleLitExpr
-    source: expr.go:178
-    why: "TupleLitExpr is a tuple literal, (x, y)."
-    field Elems: []Expr
+  struct IfElseExpr
+    source: expr.go:244
+    why: "IfElseExpr represents if cond { a } else { b } as an expression."
+    field Cond: Expr
+    field Then: Block
+      doc: "last expression is the value"
+    field Else: Block
+      doc: "last expression is the value"
+    field ElseIfs: []ElseIfBranch
+      doc: "optional else-if chains"
 
-  struct TuplePattern
-    source: expr.go:462
-    why: "TuplePattern matches a tuple and binds its elements, e.g. (x, y)."
-    field Elems: []Pattern
+  struct ElseIfBranch
+    source: expr.go:252
+    why: "ElseIfBranch is a single else-if branch within an if-expression."
+    field Cond: Expr
+    field Body: Block
 
-  struct TupleType
-    source: ast.go:92
-    why: "TupleType holds fields for (T, U) or (x: T, y: U)."
-    field Fields: []TupleField
-
-  struct TypeAliasDecl
-    source: ast.go:341
-    why: "TypeAliasDecl is a type alias: type Name = OtherType"
-    field Name: string
-    field IsPublic: bool
-      doc: "true if declared with `pub`"
-    field Type: TypeExpr
-    field Span: Span
-
-  struct TypeExpr
-    source: ast.go:21
-    why: "TypeExpr represents any type expression in Forge."
-    field Kind: TypeExprKind
-    field Data: any
-      doc: "one of NamedType, OptionalType, UnionType, SequenceType, MapType, TupleType, FuncType, ChannelType, or nil for Lock/Unit"
-    field Span: Span
-
-  struct TypeExprKind
-    why: "Method holder for TypeExprKind's String, giving each type-expression-kind tag a human-readable name."
+  typedef StmtKind: int
+    source: expr.go:260
+    why: "StmtKind discriminates statement types."
     method String() string
-      source: ast.go:51
-      why: "String returns the human-readable name of the type expression kind."
+      source: expr.go:288
+      why: "String returns the human-readable name of the statement kind."
 
-  typedef TypeExprKind: int
-    source: ast.go:28
-    why: "TypeExprKind discriminates the kinds of type expressions."
-
-  struct TypeParam
-    source: ast.go:118
-    why: "TypeParam is a type parameter declaration like T or T: Comparable."
-    field Name: string
-    field Constraint: string
-      doc: "empty if unconstrained"
+  struct Stmt
+    source: expr.go:296
+    why: "Stmt is any statement node."
+    field Kind: StmtKind
+    field Data: any
+      doc: "one of the *Stmt types below"
     field Span: Span
 
-  struct UnaryExpr
-    source: expr.go:141
-    why: "UnaryExpr applies a unary operator to an operand, e.g. -x or !x."
-    field Op: UnaryOp
-    field Operand: Expr
-
-  typedef UnaryOp: int
-    source: expr.go:133
-    why: "UnaryOp identifies a unary operator (negation, logical not)."
-
-  struct UnionType
-    source: ast.go:70
-    why: "UnionType holds variants for T | U."
-    field Variants: []TypeExpr
-
-  struct UnwrapExpr
-    source: expr.go:225
-    why: "UnwrapExpr represents expr! — unwrap an optional value, panic if nil."
-    field Operand: Expr
+  struct Block
+    source: expr.go:303
+    why: "Block is a sequence of statements (function body, if branch, etc.)."
+    field Stmts: []Stmt
+    field Span: Span
 
   struct VarDeclStmt
     source: expr.go:310
@@ -880,21 +750,52 @@ module ast
     field ElseBlock: *Block
       doc: "required when Pattern is set"
 
-  struct VariantPattern
-    source: expr.go:456
-    why: "VariantPattern matches an enum variant and binds its fields, e.g. Some(x)."
-    field Name: string
-    field Bindings: []Pattern
+  struct AssignStmt
+    source: expr.go:321
+    why: "AssignStmt assigns a value to a target (ident, field access, or index)."
+    field Target: Expr
+      doc: "ident, field access, or index"
+    field Value: Expr
 
-  struct WhereClause
-    source: ast.go:136
-    why: "WhereClause constrains type variables."
-    field Variable: string
-      doc: "empty for bare relational constraints"
-    field Constraint: string
-    field TypeArgs: []TypeExpr
-      doc: "populated for relational constraints: Graph<G, N, E>"
+  struct ReturnStmt
+    source: expr.go:327
+    why: "ReturnStmt returns from a function, optionally with a value."
+    field Value: *Expr
+      doc: "nil for bare return"
+
+  struct ExprStmt
+    source: expr.go:332
+    why: "ExprStmt is a bare expression used as a statement (e.g. a function call)."
+    field Expr: Expr
+
+  struct IfStmt
+    source: expr.go:337
+    why: "IfStmt is an if/else-if/else statement, with optional if-let pattern binding."
+    field Condition: Expr
+    field Then: Block
+    field ElseIfs: []ElseIf
+    field Else: *Block
+      doc: "nil if no else"
+    field LetPattern: *Pattern
+      doc: "non-nil for if let: if let Variant(x) = expr { ... }"
+    field LetValue: *Expr
+      doc: "the expression being matched in if let"
+
+  struct ElseIf
+    source: expr.go:347
+    why: "ElseIf is a single else-if branch within an IfStmt."
+    field Condition: Expr
+    field Body: Block
     field Span: Span
+
+  struct ForStmt
+    source: expr.go:354
+    why: "ForStmt iterates over a collection, for [i,] item in collection."
+    field Var: string
+    field IndexVar: string
+      doc: "optional: for i, x in xs — empty if not used"
+    field Collection: Expr
+    field Body: Block
 
   struct WhileStmt
     source: expr.go:362
@@ -902,8 +803,95 @@ module ast
     field Condition: Expr
     field Body: Block
 
+  struct MatchStmt
+    source: expr.go:368
+    why: "MatchStmt matches a value against a set of pattern arms."
+    field Value: Expr
+    field Arms: []MatchArm
+
+  struct MatchArm
+    source: expr.go:374
+    why: "MatchArm is a single arm of a match, with one or more patterns and an optional guard."
+    field Pattern: Pattern
+    field Patterns: []Pattern
+      doc: "additional alternative patterns (pat1 | pat2 | pat3)"
+    field Guard: *Expr
+      doc: "optional: `if <expr>` guard clause"
+    field Body: Block
+    field Span: Span
+
+  struct SpawnStmt
+    source: expr.go:383
+    why: "SpawnStmt starts a new concurrent task, spawn { ... }."
+    field Body: Block
+
   struct YieldStmt
     source: expr.go:388
     why: "YieldStmt yields a value from a generator."
     field Value: *Expr
       doc: "the expression to yield"
+
+  struct SelectStmt
+    source: expr.go:393
+    why: "SelectStmt multiplexes over channel operations, select { case ... }."
+    field Cases: []SelectCase
+
+  struct SelectCase
+    source: expr.go:398
+    why: "SelectCase is a single case (send, receive, or default) within a SelectStmt."
+    field IsDefault: bool
+    field BindVar: string
+      doc: "optional: `case val = ch.receive()`"
+    field Expr: *Expr
+      doc: "nil for default case"
+    field Body: Block
+    field Span: Span
+
+  struct LockStmt
+    source: expr.go:409
+    why: "LockStmt acquires a mutex for the duration of its body, lock(mu) { ... }."
+    field Mutex: Expr
+      doc: "the mutex expression"
+    field Body: Block
+
+  typedef PatternKind: int
+    source: expr.go:417
+    why: "PatternKind discriminates pattern types used in match arms and let bindings."
+    method String() string
+      source: expr.go:430
+      why: "String returns the human-readable name of the pattern kind."
+
+  struct Pattern
+    source: expr.go:438
+    why: "Pattern is any pattern node, used in match arms, if-let, and let..else."
+    field Kind: PatternKind
+    field Data: any
+    field Span: Span
+    field ResolvedType: any
+      doc: "set by checker for union type patterns"
+
+  struct IdentPattern
+    source: expr.go:446
+    why: "IdentPattern binds a matched value to a name."
+    field Name: string
+
+  struct LiteralPattern
+    source: expr.go:451
+    why: "LiteralPattern matches against a literal value."
+    field Expr: Expr
+
+  struct VariantPattern
+    source: expr.go:456
+    why: "VariantPattern matches an enum variant and binds its fields, e.g. Some(x)."
+    field Name: string
+    field Bindings: []Pattern
+
+  struct TuplePattern
+    source: expr.go:462
+    why: "TuplePattern matches a tuple and binds its elements, e.g. (x, y)."
+    field Elems: []Pattern
+
+  struct CascadeStmt
+    source: expr.go:467
+    why: "CascadeStmt runs its body on scope exit, like Go's defer, cascade { ... }."
+    field Body: Block

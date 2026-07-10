@@ -136,9 +136,12 @@ module lyric
     VerifyLy reports them as drift instead.
     """
 
-  func ExtractLy(srcDir string) (*extract.PackageInfo, error)
-    source: lyric.go:217
-    why: "ExtractLy extracts the public Lyric API of srcDir by bridging to the external extract_api binary."
+  typedef Severity: int
+    source: lyric.go:47
+    why: "Severity levels for verification findings."
+    method String() string
+      source: lyric.go:56
+      why: "String renders the Severity as an uppercase label (ERROR/WARNING/INFO)."
 
   struct Finding
     source: lyric.go:69
@@ -155,19 +158,21 @@ module lyric
       source: lyric.go:77
       why: "String renders the Finding as a human-readable \"[SEV] loc: message\" line."
 
+  struct VerifyResult
+    source: lyric.go:86
+    why: "VerifyResult holds all findings from a verification run."
+    field Findings: []Finding
+    method ErrorCount() int
+      source: lyric.go:100
+      why: "ErrorCount returns the number of SevError findings."
+
+  func ExtractLy(srcDir string) (*extract.PackageInfo, error)
+    source: lyric.go:217
+    why: "ExtractLy extracts the public Lyric API of srcDir by bridging to the external extract_api binary."
+
   func GenerateLy(srcDir string) (outPath, content string, err error)
     source: lyric.go:381
     why: "GenerateLy scaffolds the content for a fresh <dirname>.ly.lyric file from srcDir's current source."
-
-  struct Severity
-    why: "Method group for the Severity int type; carries its Stringer implementation."
-    method String() string
-      source: lyric.go:56
-      why: "String renders the Severity as an uppercase label (ERROR/WARNING/INFO)."
-
-  typedef Severity: int
-    source: lyric.go:47
-    why: "Severity levels for verification findings."
 
   func UpdateLy(lyricPath string) (added, removed []string, err error)
     source: lyric.go:401
@@ -176,11 +181,3 @@ module lyric
   func VerifyLy(lyricPath string) (*VerifyResult, error)
     source: lyric.go:430
     why: "VerifyLy compares a .ly.lyric file against its Lyric source and reports drift via Findings."
-
-  struct VerifyResult
-    source: lyric.go:86
-    why: "VerifyResult holds all findings from a verification run."
-    field Findings: []Finding
-    method ErrorCount() int
-      source: lyric.go:100
-      why: "ErrorCount returns the number of SevError findings."

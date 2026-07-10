@@ -147,9 +147,20 @@ module typescript
     documentation fails verification.
     """
 
-  func ExtractTs(srcDir string) (*extract.PackageInfo, error)
-    source: typescript.go:217
-    why: "ExtractTs extracts the public TypeScript API of srcDir into a *PackageInfo via the extract_api.js bridge."
+  struct VerifyResult
+    source: typescript.go:49
+    why: "VerifyResult holds all findings from a verification run."
+    field Findings: []Finding
+    method ErrorCount() int
+      source: typescript.go:102
+      why: "ErrorCount returns the number of SevError findings."
+
+  typedef Severity: int
+    source: typescript.go:54
+    why: "Severity classifies a verification Finding as Error, Warning, or Info."
+    method String() string
+      source: typescript.go:63
+      why: "String returns the upper-case name of the severity (\"ERROR\", \"WARNING\", \"INFO\")."
 
   struct Finding
     source: typescript.go:76
@@ -166,31 +177,17 @@ module typescript
       source: typescript.go:84
       why: "String renders the finding as \"[SEVERITY] file ↔ source: message\"."
 
+  func ExtractTs(srcDir string) (*extract.PackageInfo, error)
+    source: typescript.go:217
+    why: "ExtractTs extracts the public TypeScript API of srcDir into a *PackageInfo via the extract_api.js bridge."
+
   func GenerateTs(srcDir string) (outPath, content string, err error)
     source: typescript.go:393
     why: "GenerateTs scaffolds a fresh <dirname>.ts.lyric file for srcDir, returning its path and content without writing to disk."
 
-  struct Severity
-    why: "Severity classifies a verification Finding as Error, Warning, or Info."
-    method String() string
-      source: typescript.go:63
-      why: "String returns the upper-case name of the severity (\"ERROR\", \"WARNING\", \"INFO\")."
-
-  typedef Severity: int
-    source: typescript.go:54
-    why: "Severity classifies a verification Finding as Error, Warning, or Info."
-
   func UpdateTs(lyricPath string) (added, removed []string, err error)
     source: typescript.go:413
     why: "UpdateTs refreshes lyricPath from source while preserving all human-authored prose, returning the list of newly added exports."
-
-  struct VerifyResult
-    source: typescript.go:49
-    why: "VerifyResult holds all findings from a verification run."
-    field Findings: []Finding
-    method ErrorCount() int
-      source: typescript.go:102
-      why: "ErrorCount returns the number of SevError findings."
 
   func VerifyTs(lyricPath string) (*VerifyResult, error)
     source: typescript.go:442

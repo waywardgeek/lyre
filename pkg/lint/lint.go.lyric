@@ -126,6 +126,13 @@ module lint
     engine decoupled from parsing and drift detection.
     """
 
+  typedef Severity: int
+    source: lint.go:34
+    why: "Severity classifies lint findings."
+    method String() string
+      source: lint.go:42
+      why: "String renders the Severity as an uppercase label (\"WARNING\", \"INFO\")."
+
   struct Finding
     source: lint.go:55
     why: "Finding is a single lint report. Code is the W001-W008 token."
@@ -143,16 +150,6 @@ module lint
       source: lint.go:64
       why: "String renders a Finding as a one-line \"[SEVERITY CODE] file: where: message\" report."
 
-  func Lint(p *extract.PackageInfo, lyricPath string, opts Opts) *Result
-    source: lint.go:99
-    why: "Lint runs all enabled checks against p. lyricPath is recorded on each"
-
-  struct Opts
-    source: lint.go:90
-    why: "Opts configures a lint run."
-    field KnownTests: map[string]bool
-      doc: "KnownTests is the set of test function names that exist in the project."
-
   struct Result
     source: lint.go:74
     why: "Result holds all findings from a lint run. Findings are sorted by"
@@ -161,12 +158,12 @@ module lint
       source: lint.go:79
       why: "WarningCount returns the number of SevWarning findings."
 
-  struct Severity
-    why: "Severity classifies lint findings as WARNING or INFO."
-    method String() string
-      source: lint.go:42
-      why: "String renders the Severity as an uppercase label (\"WARNING\", \"INFO\")."
+  struct Opts
+    source: lint.go:90
+    why: "Opts configures a lint run."
+    field KnownTests: map[string]bool
+      doc: "KnownTests is the set of test function names that exist in the project."
 
-  typedef Severity: int
-    source: lint.go:34
-    why: "Severity classifies lint findings."
+  func Lint(p *extract.PackageInfo, lyricPath string, opts Opts) *Result
+    source: lint.go:99
+    why: "Lint runs all enabled checks against p. lyricPath is recorded on each"
