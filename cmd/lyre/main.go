@@ -2,16 +2,21 @@
 //
 // Usage:
 //
-//	lyre verify <file.go.lyric|file.lyric> [...]  Check understanding files against source
-//	lyre update <file.go.lyric|file.lyric> [...]  Regenerate auto-generated sections
-//	lyre gen <package-dir>                         Scaffold a new understanding file from source
-//	lyre lint <file.lyric> [...]                   Report recoverable quality issues in .lyric files
+//	lyre verify <file-or-dir> [...]  Check understanding files against source
+//	lyre update <file-or-dir> [...]  Regenerate auto-generated sections
+//	lyre gen <package-dir>           Scaffold a new understanding file from source
+//	lyre lint <file-or-dir> [...]    Report recoverable quality issues in .lyric files
+//
+// verify/update/lint accept directories as well as files; a directory is walked
+// recursively for *.lyric files (skipping vendor/, node_modules/, and .git/).
 package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/waywardgeek/lyre/pkg/cdd"
@@ -27,10 +32,13 @@ import (
 const usage = `Usage: lyre <command> [arguments]
 
 Commands:
-  verify   <file> [...]          Check understanding files against source code
-  update   <file> [...]          Regenerate auto-generated sections
+  verify   <file-or-dir> [...]   Check understanding files against source code
+  update   <file-or-dir> [...]   Regenerate auto-generated sections
   gen      <package-dir>         Scaffold a new understanding file from source
-  lint     <file.lyric> [...]    Report recoverable quality issues in .lyric files
+  lint     <file-or-dir> [...]   Report recoverable quality issues in .lyric files
+
+A directory argument to verify/update/lint is walked recursively for *.lyric
+files (skipping vendor/, node_modules/, and .git/).
 `
 
 var commands = []string{"verify", "update", "gen", "lint", "help"}
@@ -57,6 +65,56 @@ func resolveCommand(prefix string) (string, error) {
 	default:
 		return "", fmt.Errorf("ambiguous command %q: matches %s", prefix, strings.Join(matches, ", "))
 	}
+}
+
+// expandLyricArgs turns each argument into one or more .lyric file paths so the
+// verify/update/lint commands can accept directories as well as files. A file
+// argument is passed through unchanged (even if it doesn't end in .lyric — the
+// caller's language detection reports that). A directory argument is walked
+// recursively and every *.lyric file under it is collected, skipping vendor/,
+// node_modules/, and .git/ subtrees (matching golang.DiscoverTestFuncs). The
+// .lyric files discovered under a single directory are sorted for deterministic
+// output; file arguments keep their given order. It is an error for a directory
+// to contain no .lyric files, so a mistyped path fails loudly instead of
+// silently doing nothing.
+func expandLyricArgs(args []string) ([]string, error) {
+	var out []string
+	for _, arg := range args {
+		info, err := os.Stat(arg)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			out = append(out, arg)
+			continue
+		}
+		var found []string
+		walkErr := filepath.WalkDir(arg, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				switch d.Name() {
+				case "vendor", "node_modules", ".git":
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(d.Name(), ".lyric") {
+				found = append(found, path)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return nil, fmt.Errorf("scanning %s: %w", arg, walkErr)
+		}
+		if len(found) == 0 {
+			return nil, fmt.Errorf("no .lyric files found under %s", arg)
+		}
+		sort.Strings(found)
+		out = append(out, found...)
+	}
+	return out, nil
 }
 
 func main() {
@@ -97,11 +155,16 @@ func main() {
 
 func cmdVerify(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: lyre verify <file> [...]")
+		return fmt.Errorf("usage: lyre verify <file-or-dir> [...]")
+	}
+
+	paths, err := expandLyricArgs(args)
+	if err != nil {
+		return err
 	}
 
 	totalErrors, totalWarnings := 0, 0
-	for _, path := range args {
+	for _, path := range paths {
 		lang := extract.DetectLanguage(path)
 		switch lang {
 		case "go":
@@ -196,14 +259,11 @@ func reportUpdate(path string, added, removed []string) {
 
 func cmdUpdate(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: lyre update <file> [...]")
+		return fmt.Errorf("usage: lyre update <file-or-dir> [...]")
 	}
-	var files []string
-	for _, a := range args {
-		files = append(files, a)
-	}
-	if len(files) == 0 {
-		return fmt.Errorf("usage: lyre update <file> [...]")
+	files, err := expandLyricArgs(args)
+	if err != nil {
+		return err
 	}
 	for _, path := range files {
 		lang := extract.DetectLanguage(path)
@@ -366,16 +426,20 @@ func cmdLint(args []string) error {
 		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file.lyric> [...]")
 	}
 	fatal := false
-	var files []string
+	var rawArgs []string
 	for _, a := range args {
 		if a == "--fatal-warnings" {
 			fatal = true
 		} else {
-			files = append(files, a)
+			rawArgs = append(rawArgs, a)
 		}
 	}
-	if len(files) == 0 {
-		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file.lyric> [...]")
+	if len(rawArgs) == 0 {
+		return fmt.Errorf("usage: lyre lint [--fatal-warnings] <file-or-dir> [...]")
+	}
+	files, err := expandLyricArgs(rawArgs)
+	if err != nil {
+		return err
 	}
 	// Cache discovered Go test sets by module root so repeated Go files in
 	// the same module reuse a single tree walk.

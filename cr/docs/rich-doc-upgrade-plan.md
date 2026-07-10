@@ -1529,3 +1529,41 @@ and four `*Kind` typedefs in `pkg/ast`). All `.lyric` verify 0/0 and lint 0.
 **Tests.** `TestExtractGo_TypedefWithMethods` proves: no phantom struct, both
 methods present under the typedef, `Write`→`Parse` round-trip preserves them,
 and `VerifyGo` is clean.
+
+---
+
+## Amendment: Directory arguments for verify/update/lint (2026-07-10)
+
+**Motivation.** `lyre verify`, `update`, and `lint` accepted only individual
+file paths; pointing any of them at a directory failed with
+`... is a directory`. This was friction on nearly every CDD interaction —
+verifying "the whole package" or "the whole repo" meant globbing `.lyric`
+paths by hand. For the tool that is meant to be the basis of CDD going
+forward, `lyre verify .` has to just work.
+
+**What shipped.** A shared helper `expandLyricArgs(args) ([]string, error)`
+in `cmd/lyre/main.go`, wired into `cmdVerify`, `cmdUpdate`, and `cmdLint`
+(after flag parsing, so `--fatal-warnings` still works):
+- A **file** argument passes through unchanged (language detection still
+  reports on it — a non-`.lyric` file is diagnosed by the command, not the
+  expander).
+- A **directory** argument is walked recursively with `filepath.WalkDir`;
+  every `*.lyric` file under it is collected, skipping `vendor/`,
+  `node_modules/`, and `.git/` subtrees (same skip set as
+  `golang.DiscoverTestFuncs`). Results within one directory are sorted for
+  deterministic output; file args keep their given order.
+- An empty directory (no `.lyric` files) is an **error**
+  (`no .lyric files found under <dir>`), so a mistyped path fails loudly
+  instead of silently doing nothing — matches the de-jank "no silent
+  no-ops" principle.
+- `gen` is unchanged: it already takes a `<package-dir>` (source dir), a
+  different argument shape.
+
+**Usage text + package doc-comment** updated to `<file-or-dir>`.
+
+**Tests.** `TestExpandLyricArgs` (new `cmd/lyre/main_test.go`) covers:
+recursive expansion with sorted order + vendor/node_modules skip, file
+pass-through, mixed file+dir arg ordering, empty-dir error, and
+nonexistent-path error. Dogfood: `lyre verify .` / `lint .` / `update .`
+on lyre's own tree find all 9 `.lyric` files (verify 0/0, lint 0, all up to
+date).
