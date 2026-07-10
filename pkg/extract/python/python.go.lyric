@@ -36,8 +36,11 @@ module python
       value-vs-reference type distinction. Classes deriving from Protocol are
       reclassified as interfaces.
     - Signatures are opaque verbatim Python text. Field SignatureText is type-only
-      ("int", "Optional[Token]"); method/function form is "Name(self, p: T) -> R"
-      with no def keyword, no decorators, no trailing colon.
+      ("int", "Optional[Token]"); method/function form is "Name(self, p: T = d) -> R"
+      with no def keyword, no decorators, no trailing colon. Parameter default
+      values ARE included (source of the required-vs-optional contract). The
+      `async` coroutine modifier is NOT part of the signature string — it is
+      carried on FuncInfo.IsAsync and round-tripped as an `async` decl prefix.
     - Update is "source is truth" for signatures/positions and per-decl Why
       (PreferFresh: a source docstring overwrites .lyric Why), but human-authored
       ModuleWhy, Invariants, and Doc blocks are strictly preserved.
@@ -76,6 +79,18 @@ module python
     A class deriving from typing.Protocol (or Protocol) is emitted as an
     InterfaceInfo, not a StructInfo. All other classes become StructInfo with
     IsClass=true, since Python has no value-vs-reference type distinction.
+    """
+
+  invariant "Async-ness and parameter defaults are captured and verified":
+    verified-by: TestExtractPy_AsyncAndDefaults, TestGeneratePy_AsyncRoundTripsThroughCDD, TestVerifyPy_AsyncMismatch
+    """
+    extract_api.py records each param's default-value expression (func_info via
+    unparse_default) so SignatureText carries "p: T = d" / "p=d", and marks
+    coroutines with is_async (ast.AsyncFunctionDef). python.go threads is_async
+    into FuncInfo.IsAsync, which the .lyric writer emits as an `async` decl
+    prefix. VerifyPy treats async-ness as a first-class contract: a documented-
+    async function made sync in source (or vice versa) is reported as drift,
+    independently of the signature-string comparison.
     """
 
   invariant "Signatures are opaque verbatim text compared modulo whitespace":
@@ -136,17 +151,17 @@ module python
       why: "ErrorCount returns the number of SevError findings."
 
   func ExtractPy(srcDir string) (*extract.PackageInfo, error)
-    source: python.go:217
+    source: python.go:219
     why: "ExtractPy parses every public .py file in srcDir and returns the public"
 
   func GeneratePy(srcDir string) (outPath, content string, err error)
-    source: python.go:381
+    source: python.go:395
     why: "GeneratePy scaffolds a fresh <dirname>.py.lyric file for srcDir. It does"
 
   func UpdatePy(lyricPath string) (added, removed []string, err error)
-    source: python.go:398
+    source: python.go:412
     why: "UpdatePy refreshes lyricPath: re-extracts signatures/positions from"
 
   func VerifyPy(lyricPath string) (*VerifyResult, error)
-    source: python.go:425
+    source: python.go:439
     why: "VerifyPy parses lyricPath as a .py.lyric v2 file, re-extracts the"

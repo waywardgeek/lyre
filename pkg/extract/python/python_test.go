@@ -643,3 +643,129 @@ func TestUpdatePy_PrunesRemovedExport(t *testing.T) {
 		t.Errorf("pruned .py.lyric should not mention describe; got:\n%s", updated)
 	}
 }
+
+// --- async + default values (workflow orchestration fidelity) -------------
+
+// asyncSource exercises `async def` methods/functions and parameter defaults —
+// the two attributes that matter most for Python workflow/orchestration code.
+const asyncSource = `"""Async workflow sample."""
+from typing import Optional
+
+__all__ = ["Runner", "orchestrate"]
+
+class Runner:
+    """Runs steps."""
+    async def step(self, name: str, retries: int = 3) -> dict:
+        """Run one step."""
+        return {}
+
+    def sync_helper(self, x: int = 0) -> int:
+        return x
+
+async def orchestrate(items: list, timeout: float = 30.0) -> Optional[str]:
+    """Top-level async workflow entry."""
+    return None
+`
+
+func TestExtractPy_AsyncAndDefaults(t *testing.T) {
+	requireExtractor(t)
+	dir := writeTempPy(t, asyncSource)
+	p, err := python.ExtractPy(dir)
+	if err != nil {
+		t.Fatalf("ExtractPy: %v", err)
+	}
+	runner, ok := p.Structs["Runner"]
+	if !ok {
+		t.Fatal("Runner class missing")
+	}
+
+	step, ok := runner.Methods["step"]
+	if !ok {
+		t.Fatal("Runner.step missing")
+	}
+	if !step.IsAsync {
+		t.Error("Runner.step should be marked IsAsync")
+	}
+	if step.SignatureText != "step(self, name: str, retries: int = 3) -> dict" {
+		t.Errorf("step signature: got %q", step.SignatureText)
+	}
+
+	sync, ok := runner.Methods["sync_helper"]
+	if !ok {
+		t.Fatal("Runner.sync_helper missing")
+	}
+	if sync.IsAsync {
+		t.Error("Runner.sync_helper should NOT be async")
+	}
+	if sync.SignatureText != "sync_helper(self, x: int = 0) -> int" {
+		t.Errorf("sync_helper signature: got %q", sync.SignatureText)
+	}
+
+	orch, ok := p.Functions["orchestrate"]
+	if !ok {
+		t.Fatal("orchestrate function missing")
+	}
+	if !orch.IsAsync {
+		t.Error("orchestrate should be marked IsAsync")
+	}
+	if orch.SignatureText != "orchestrate(items: list, timeout: float = 30.0) -> Optional[str]" {
+		t.Errorf("orchestrate signature: got %q", orch.SignatureText)
+	}
+}
+
+// TestGeneratePy_AsyncRoundTripsThroughCDD checks the async prefix survives the
+// full Extract → cdd.Write → cdd.Parse → VerifyPy loop with zero drift.
+func TestGeneratePy_AsyncRoundTripsThroughCDD(t *testing.T) {
+	requireExtractor(t)
+	dir := writeTempPy(t, asyncSource)
+	outPath := generateAndWrite(t, dir)
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("reading generated .lyric: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "async method step") {
+		t.Errorf(".lyric missing `async method step`:\n%s", text)
+	}
+	if !strings.Contains(text, "async func orchestrate") {
+		t.Errorf(".lyric missing `async func orchestrate`:\n%s", text)
+	}
+
+	result, err := python.VerifyPy(outPath)
+	if err != nil {
+		t.Fatalf("VerifyPy: %v", err)
+	}
+	if result.ErrorCount() > 0 {
+		t.Errorf("expected clean verify, got: %v", result.Findings)
+	}
+}
+
+// TestVerifyPy_AsyncMismatch proves async-ness is a verified contract: making a
+// documented-async function sync in source is reported as drift.
+func TestVerifyPy_AsyncMismatch(t *testing.T) {
+	requireExtractor(t)
+	dir := writeTempPy(t, asyncSource)
+	outPath := generateAndWrite(t, dir)
+
+	// Flip orchestrate from `async def` to plain `def` in source.
+	syncVersion := strings.Replace(asyncSource,
+		"async def orchestrate(", "def orchestrate(", 1)
+	if err := os.WriteFile(filepath.Join(dir, "shapes.py"), []byte(syncVersion), 0644); err != nil {
+		t.Fatalf("writing sync source: %v", err)
+	}
+
+	result, err := python.VerifyPy(outPath)
+	if err != nil {
+		t.Fatalf("VerifyPy: %v", err)
+	}
+	found := false
+	for _, f := range result.Findings {
+		if f.Severity == python.SevError && strings.Contains(f.Message, "async mismatch") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected async-mismatch error; got: %v", result.Findings)
+	}
+}

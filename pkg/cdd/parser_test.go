@@ -366,3 +366,57 @@ func TestParse_DottedNameWithType(t *testing.T) {
 		t.Errorf("got %+v", s.Fields[0])
 	}
 }
+
+// TestParse_AsyncModifier covers the `async` prefix on func/method decl lines
+// (Python `async def` / TS async). It must parse into FuncInfo.IsAsync and
+// survive a Write→Parse round-trip without leaking onto sync decls.
+func TestParse_AsyncModifier(t *testing.T) {
+	p := mustParse(t, `module m
+  class Runner
+    async method step(self, n: int) -> dict
+    method sync_helper(self) -> int
+  async func orchestrate(x: int) -> str
+  func plain(x: int) -> str
+`)
+	runner := p.Structs["Runner"]
+	if runner == nil {
+		t.Fatal("Runner not parsed")
+	}
+	if m := runner.Methods["step"]; m == nil || !m.IsAsync {
+		t.Errorf("step should be async, got %+v", m)
+	}
+	if m := runner.Methods["sync_helper"]; m == nil || m.IsAsync {
+		t.Errorf("sync_helper should not be async, got %+v", m)
+	}
+	if f := p.Functions["orchestrate"]; f == nil || !f.IsAsync {
+		t.Errorf("orchestrate should be async, got %+v", f)
+	}
+	if f := p.Functions["plain"]; f == nil || f.IsAsync {
+		t.Errorf("plain should not be async, got %+v", f)
+	}
+
+	// Round-trip: the writer re-emits the prefix; the parser re-reads it.
+	text := Write(p)
+	if !strings.Contains(text, "async method step") {
+		t.Errorf("Write dropped `async method` prefix:\n%s", text)
+	}
+	if !strings.Contains(text, "async func orchestrate") {
+		t.Errorf("Write dropped `async func` prefix:\n%s", text)
+	}
+	got, err := Parse(text, "rt.py.lyric")
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if !got.Structs["Runner"].Methods["step"].IsAsync {
+		t.Error("async method flag lost on round-trip")
+	}
+	if got.Structs["Runner"].Methods["sync_helper"].IsAsync {
+		t.Error("sync method gained async on round-trip")
+	}
+	if !got.Functions["orchestrate"].IsAsync {
+		t.Error("async func flag lost on round-trip")
+	}
+	if got.Functions["plain"].IsAsync {
+		t.Error("sync func gained async on round-trip")
+	}
+}

@@ -101,6 +101,12 @@ type FuncInfo struct {
 	File          string
 	Line          int
 
+	// IsAsync marks a coroutine/async function or method (Python `async def`,
+	// TypeScript `async`). Round-tripped through the .lyric as an `async`
+	// prefix modifier on the `func`/`method` decl line. Languages without an
+	// async modifier (Go, Lyric) always leave this false.
+	IsAsync bool
+
 	// Rich-doc additions (Phase 1).
 	Why    string // per-decl "why" prose
 	Source string

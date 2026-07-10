@@ -233,7 +233,7 @@ func (p *parser) parseModuleBody(pkg *extract.PackageInfo) error {
 			if err := p.parseInterfaceDecl(1, pkg); err != nil {
 				return err
 			}
-		case "func":
+		case "func", "async":
 			if err := p.parseFuncDecl(1, pkg); err != nil {
 				return err
 			}
@@ -254,6 +254,16 @@ func firstToken(content string) string {
 		i++
 	}
 	return content[:i]
+}
+
+// stripAsyncPrefix removes an optional leading "async " modifier from a
+// func/method decl line, reporting whether it was present. Mirrors the
+// writer's declKeyword so `async func`/`async method` round-trip losslessly.
+func stripAsyncPrefix(content string) (rest string, isAsync bool) {
+	if t := strings.TrimPrefix(content, "async "); t != content {
+		return strings.TrimLeft(t, " "), true
+	}
+	return content, false
 }
 
 // parseModuleSourceList parses `[ "a", "b" ]` after the `source:` key.
@@ -463,7 +473,7 @@ func (p *parser) parseStructDecl(ind int, kind string, pkg *extract.PackageInfo)
 			if err := p.parseFieldBlock(ind+1, s); err != nil {
 				return err
 			}
-		case "method":
+		case "method", "async":
 			if err := p.parseMethodBlock(ind+1, s.Methods); err != nil {
 				return err
 			}
@@ -511,7 +521,7 @@ func (p *parser) parseInterfaceDecl(ind int, pkg *extract.PackageInfo) error {
 				return err
 			}
 			i.Why = val
-		case "method":
+		case "method", "async":
 			if err := p.parseMethodBlock(ind+1, i.Methods); err != nil {
 				return err
 			}
@@ -528,13 +538,14 @@ func (p *parser) parseFuncDecl(ind int, pkg *extract.PackageInfo) error {
 	if err != nil {
 		return err
 	}
-	rest := strings.TrimPrefix(content, "func ")
+	rest, isAsync := stripAsyncPrefix(content)
+	rest = strings.TrimPrefix(rest, "func ")
 	rest = strings.TrimLeft(rest, " ")
 	name := leadingIdentifier(rest)
 	if name == "" {
 		return p.errf(lineNum, "func line missing function name: %q", content)
 	}
-	f := &extract.FuncInfo{SignatureText: strings.TrimRight(rest, " ")}
+	f := &extract.FuncInfo{SignatureText: strings.TrimRight(rest, " "), IsAsync: isAsync}
 	if err := p.parseFuncBody(ind, f); err != nil {
 		return err
 	}
@@ -587,7 +598,7 @@ func (p *parser) parseTypedefDecl(ind int, pkg *extract.PackageInfo) error {
 				return err
 			}
 			t.Why = val
-		case "method":
+		case "method", "async":
 			if t.Methods == nil {
 				t.Methods = map[string]*extract.FuncInfo{}
 			}
@@ -640,13 +651,14 @@ func (p *parser) parseMethodBlock(ind int, into map[string]*extract.FuncInfo) er
 	if err != nil {
 		return err
 	}
-	rest := strings.TrimPrefix(content, "method ")
+	rest, isAsync := stripAsyncPrefix(content)
+	rest = strings.TrimPrefix(rest, "method ")
 	rest = strings.TrimLeft(rest, " ")
 	name := leadingIdentifier(rest)
 	if name == "" {
 		return p.errf(lineNum, "method line missing method name: %q", content)
 	}
-	f := &extract.FuncInfo{SignatureText: strings.TrimRight(rest, " ")}
+	f := &extract.FuncInfo{SignatureText: strings.TrimRight(rest, " "), IsAsync: isAsync}
 	if err := p.parseFuncBody(ind, f); err != nil {
 		return err
 	}

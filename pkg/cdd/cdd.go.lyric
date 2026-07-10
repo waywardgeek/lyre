@@ -136,7 +136,20 @@ module cdd
     verified-by/procedural) form a closed set; an unrecognized first token
     on a line is a parse error. Scope rules are enforced: `why:` is invalid
     at field scope (rationale must be promoted to a module-scope doc block);
-    interfaces admit only `method` children, never `field`.
+    interfaces admit only `method` children, never `field`. A `func`/`method`
+    head may carry an optional leading `async` modifier (`async func` /
+    `async method`); no other modifier keywords exist.
+    """
+
+  invariant "Async modifier round-trips losslessly":
+    verified-by: TestParse_AsyncModifier
+    """
+    A `func`/`method` decl line may be prefixed with `async ` to mark a
+    coroutine (Python `async def`, TS async). The parser strips it into
+    FuncInfo.IsAsync via stripAsyncPrefix; the writer re-emits it via
+    declKeyword. The two helpers are kept in lockstep so Write(Parse(x))
+    preserves async-ness and never leaks the prefix onto a sync decl.
+    Languages without an async modifier leave IsAsync false and emit no prefix.
     """
 
   func Parse(text, filename string) (*extract.PackageInfo, error)

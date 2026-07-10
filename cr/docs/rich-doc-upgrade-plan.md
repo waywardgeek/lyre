@@ -1592,3 +1592,48 @@ nil `KnownTests` set, leaving W007 dormant rather than risking false
 positives from a discovery mechanism we don't have. Revisit when the first
 real `.py.lyric` / `.ts.lyric` with `verified-by:` clauses appears — that
 consumer will pin down the naming convention.
+
+---
+
+## Amendment: Python async + parameter defaults (2026-07-10)
+
+**Motivation.** Ahead of a large Go→Python workflow-orchestration rewrite, we
+audited whether the Python extractor was "good enough." It was *safe* (clean
+round-trip verify) but dropped two attributes that matter most for async
+orchestration code: the `async` coroutine marker and parameter default values.
+Dogfooding on the real `cr_workflow.py` (≈90% `async def`, many defaults like
+`system_prompt=""`, `timeout=600`) showed every method rendered as a plain
+`method ...` with defaults stripped — subtly incomplete docs for exactly the
+code we're about to generate a lot of.
+
+**What shipped (cross-stack, opaque-signature design preserved).**
+- **Format**: `async` is a decl-line prefix modifier — `async method ...` /
+  `async func ...` — chosen because the DSL already uses `method`/`func` in
+  place of `def`. The signature payload after the keyword stays verbatim-native.
+- **Model**: `extract.FuncInfo` gains `IsAsync bool`.
+- **cdd DSL**: writer emits the prefix via `declKeyword`; parser strips it via
+  `stripAsyncPrefix` and routes `async func`/`async method` through the existing
+  func/method dispatch. Two helpers kept in lockstep for lossless round-trip.
+- **Python extractor**: `extract_api.py` `func_info` now emits `is_async`
+  (from `ast.AsyncFunctionDef`) and a per-param `default` (via new
+  `unparse_default`, mapping `args.defaults` to the positional tail and
+  `kw_defaults` to kwonly). `python.go` threads `is_async` into `IsAsync` and
+  renders defaults into `SignatureText` (`p: T = d` annotated, `p=d` bare).
+  Defaults round-trip for free through the opaque signature string (no model
+  change); `IsAsync` is compared explicitly.
+- **Drift**: `VerifyPy` treats async-ness as a first-class contract —
+  flipping a documented-async function to sync (or vice versa) in source is
+  reported as an error, independent of the signature comparison. Merge
+  (`UpdatePy`) refreshes `IsAsync` source-is-truth.
+
+**Not done (Go/TS).** Go has no async modifier (goroutines aren't a function
+attribute) — `IsAsync` stays false. TypeScript *does* have `async`; the format
+now supports it, but the TS extractor (`extract_api.js`) was not updated in
+this pass — a follow-up when TS workflows appear.
+
+**Tests.** cdd: `TestParse_AsyncModifier` (parse + Write→Parse round-trip, no
+leak onto sync decls). python: `TestExtractPy_AsyncAndDefaults`,
+`TestGeneratePy_AsyncRoundTripsThroughCDD`, `TestVerifyPy_AsyncMismatch`.
+Invariants added to `cdd.go.lyric` ("Async modifier round-trips losslessly")
+and `python.go.lyric` ("Async-ness and parameter defaults are captured and
+verified").

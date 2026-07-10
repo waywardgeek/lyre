@@ -181,19 +181,19 @@ module extract
     field Source: string
       doc: "canonical \"file:line\" reference; refreshed by `lyre update`"
     method FieldSig(name string) (string, bool)
-      source: extract.go:148
+      source: extract.go:154
       why: "FieldSig returns the SignatureText of the named field, if present."
     method HasField(name string) bool
-      source: extract.go:158
+      source: extract.go:164
       why: "HasField reports whether the struct has a field with the given name."
     method SetField(name, sig string)
-      source: extract.go:166
+      source: extract.go:172
       why: "SetField appends or updates a field by name. Order is preserved on update;"
     method SetFieldDoc(name, doc string)
-      source: extract.go:178
+      source: extract.go:184
       why: "SetFieldDoc sets the per-field doc for the named field. Creates the field"
     method FieldNames() []string
-      source: extract.go:189
+      source: extract.go:195
       why: "FieldNames returns the field names in source order."
 
   struct FieldInfo
@@ -228,19 +228,21 @@ module extract
     field Doc: string
     field File: string
     field Line: int
+    field IsAsync: bool
+      doc: "IsAsync marks a coroutine/async function or method (Python `async def`,"
     field Why: string
       doc: "per-decl \"why\" prose"
     field Source: string
 
   struct ParamInfo
-    source: extract.go:110
+    source: extract.go:116
     why: "ParamInfo describes a function parameter."
     field Name: string
     field Type: string
     field IsMut: bool
 
   struct TypeDefInfo
-    source: extract.go:117
+    source: extract.go:123
     why: "TypeDefInfo describes a type alias or newtype and its underlying type."
     field Underlying: string
       doc: "the underlying type string, if simple"
@@ -255,7 +257,7 @@ module extract
       doc: "canonical \"file:line\" reference; round-trips through .lyric"
 
   struct LDDMeta
-    source: extract.go:135
+    source: extract.go:141
     why: "LDDMeta holds the LDD-specific metadata parsed from structured comments."
     field Source: []string
       doc: "source files this understanding file covers"
@@ -265,41 +267,41 @@ module extract
       doc: "detected language (go, python, typescript, lyric)"
 
   func SortedFieldsByName(fields []FieldInfo) []FieldInfo
-    source: extract.go:199
+    source: extract.go:205
     why: "SortedFieldsByName returns a copy of the field slice sorted alphabetically"
 
   func DetectLanguage(filename string) string
-    source: extract.go:213
+    source: extract.go:219
     why: "DetectLanguage returns the source language from a compound .lyric extension."
 
   func SanitizeModuleName(name string) string
-    source: extract.go:260
+    source: extract.go:266
     why: "SanitizeModuleName converts a directory base name into a valid Lyric"
 
   func NewPackageInfo(name string) *PackageInfo
-    source: extract.go:286
+    source: extract.go:292
     why: "NewPackageInfo creates an initialized PackageInfo."
 
   func NewStructInfo() *StructInfo
-    source: extract.go:298
+    source: extract.go:304
     why: "NewStructInfo creates an initialized StructInfo. Fields starts empty; use"
 
   func NewInterfaceInfo() *InterfaceInfo
-    source: extract.go:305
+    source: extract.go:311
     why: "NewInterfaceInfo creates an initialized InterfaceInfo."
 
   func CleanDocLine(doc string) string
-    source: extract.go:320
+    source: extract.go:326
     why: "CleanDocLine extracts a one-line summary from a multi-line native-source"
 
   func PreferFresh(existing, fresh string) string
-    source: extract.go:349
+    source: extract.go:355
     why: "PreferFresh returns fresh when it is non-empty, else keeps existing. Source"
 
   func PruneOrphans(existing, fresh *PackageInfo) []string
-    source: extract.go:372
+    source: extract.go:378
     why: "PruneOrphans removes declarations present in `existing` but absent from"
 
   func SeedWhyFromDoc(p *PackageInfo)
-    source: extract.go:451
+    source: extract.go:457
     why: "SeedWhyFromDoc populates each declaration's one-line `Why` from its scraped"

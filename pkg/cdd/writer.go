@@ -314,8 +314,18 @@ func (w *writer) funcDecl(ind int, name string, f *extract.FuncInfo) {
 	if sig == "" {
 		sig = name + "()"
 	}
-	w.line(ind, "func "+sig)
+	w.line(ind, declKeyword("func", f.IsAsync)+" "+sig)
 	w.declMeta(ind+1, f.Source, f.Why)
+}
+
+// declKeyword returns the decl head for a func/method line, prefixing the
+// optional `async` modifier when the function is a coroutine. Kept in one
+// place so the writer and the parser's stripAsyncPrefix stay in lockstep.
+func declKeyword(base string, isAsync bool) string {
+	if isAsync {
+		return "async " + base
+	}
+	return base
 }
 
 func (w *writer) typedefDecl(ind int, name string, t *extract.TypeDefInfo) {
@@ -391,7 +401,7 @@ func (w *writer) methods(ind int, ms map[string]*extract.FuncInfo) {
 		if sig == "" {
 			sig = r.name + "()"
 		}
-		w.line(ind, "method "+sig)
+		w.line(ind, declKeyword("method", r.f.IsAsync)+" "+sig)
 		w.declMeta(ind+1, r.f.Source, r.f.Why)
 	}
 }

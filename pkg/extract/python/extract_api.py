@@ -73,38 +73,67 @@ def unparse_annotation(node):
     return "Any"
 
 
+def unparse_default(node):
+    """Render a parameter's default-value expression as source text, or "" if none."""
+    if node is None:
+        return ""
+    try:
+        return ast.unparse(node)  # Python 3.9+
+    except AttributeError:
+        pass
+    # 3.8 fallback for the common literal/name cases.
+    if isinstance(node, ast.Constant):
+        return repr(node.value)
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{unparse_default(node.value)}.{node.attr}"
+    return "..."
+
+
 def func_info(node):
-    """Extract params (excluding self/cls) and returns from a FunctionDef node."""
+    """Extract params (excluding self/cls), returns, and async-ness from a
+    FunctionDef/AsyncFunctionDef node. Each param carries its default-value
+    expression (or "" when it has none)."""
     args = node.args
     params = []
-    # Collect all args: posonlyargs + args + kwonlyargs (skip self/cls at pos 0)
-    all_args = list(args.posonlyargs) + list(args.args)
-    # Skip first arg if it's self or cls
-    start = 0
-    if all_args and all_args[0].arg in ("self", "cls"):
-        start = 1
-    for arg in all_args[start:]:
+    # Positional args: posonlyargs + args. Defaults align to the TAIL of this
+    # combined list (Python guarantees defaults follow non-defaulted params).
+    pos_args = list(args.posonlyargs) + list(args.args)
+    num_pos = len(pos_args)
+    num_def = len(args.defaults)
+    pos_defaults = {}  # index in pos_args -> default node
+    for i, d in enumerate(args.defaults):
+        pos_defaults[num_pos - num_def + i] = d
+    # Skip first positional arg if it's self or cls.
+    start = 1 if (pos_args and pos_args[0].arg in ("self", "cls")) else 0
+    for idx in range(start, num_pos):
+        arg = pos_args[idx]
         params.append({
             "name": arg.arg,
             "type": unparse_annotation(arg.annotation) if arg.annotation else "Any",
+            "default": unparse_default(pos_defaults.get(idx)),
         })
-    # kwonlyargs
-    for arg in args.kwonlyargs:
+    # kwonlyargs: kw_defaults aligns 1:1 (a None entry means required kwonly).
+    for i, arg in enumerate(args.kwonlyargs):
+        kd = args.kw_defaults[i] if i < len(args.kw_defaults) else None
         params.append({
             "name": arg.arg,
             "type": unparse_annotation(arg.annotation) if arg.annotation else "Any",
+            "default": unparse_default(kd),
         })
-    # vararg (*args)
+    # vararg (*args) and kwarg (**kwargs) never carry defaults.
     if args.vararg:
         params.append({
             "name": "*" + args.vararg.arg,
             "type": unparse_annotation(args.vararg.annotation) if args.vararg.annotation else "Any",
+            "default": "",
         })
-    # kwarg (**kwargs)
     if args.kwarg:
         params.append({
             "name": "**" + args.kwarg.arg,
             "type": unparse_annotation(args.kwarg.annotation) if args.kwarg.annotation else "Any",
+            "default": "",
         })
 
     returns = []
@@ -113,7 +142,11 @@ def func_info(node):
         if ret and ret != "None":
             returns = [ret]
 
-    return {"params": params, "returns": returns}
+    return {
+        "params": params,
+        "returns": returns,
+        "is_async": isinstance(node, ast.AsyncFunctionDef),
+    }
 
 
 def get_docstring(node):

@@ -148,14 +148,16 @@ type pyIfaceJSON struct {
 type pyFuncJSON struct {
 	Params  []pyParamJSON `json:"params"`
 	Returns []string      `json:"returns"`
-	Doc     string        `json:"doc"` // docstring → one-line why:
+	IsAsync bool          `json:"is_async"` // Python `async def`
+	Doc     string        `json:"doc"`      // docstring → one-line why:
 	File    string        `json:"file"`
 	Line    int           `json:"line"`
 }
 
 type pyParamJSON struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Default string `json:"default"` // verbatim default expr, "" if the param has none
 }
 
 type pyTypeDefJSON struct {
@@ -340,6 +342,7 @@ func mergeJSONInto(p *extract.PackageInfo, raw *pyPackageJSON) {
 func funcInfoFromJSON(name string, fn pyFuncJSON, isMethod bool) *extract.FuncInfo {
 	fi := &extract.FuncInfo{
 		SignatureText: pyFuncSigText(name, fn, isMethod),
+		IsAsync:       fn.IsAsync,
 		Doc:           fn.Doc,
 		File:          filepath.Base(fn.File),
 		Line:          fn.Line,
@@ -361,6 +364,17 @@ func pyFuncSigText(name string, fn pyFuncJSON, isMethod bool) string {
 		if p.Type != "" {
 			b.WriteString(": ")
 			b.WriteString(p.Type)
+		}
+		if p.Default != "" {
+			// Python spacing convention: "x: int = 3" when annotated,
+			// "x=3" when bare. normalizeSig makes verify whitespace-insensitive
+			// regardless, but this keeps the .lyric idiomatic.
+			if p.Type != "" {
+				b.WriteString(" = ")
+			} else {
+				b.WriteString("=")
+			}
+			b.WriteString(p.Default)
 		}
 		parts = append(parts, b.String())
 	}
@@ -489,6 +503,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) (added, remove
 		for mn, fm := range fs.Methods {
 			if em, ok := es.Methods[mn]; ok {
 				em.SignatureText = fm.SignatureText
+				em.IsAsync = fm.IsAsync
 				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
 				em.Why = extract.PreferFresh(em.Why, fm.Why)
 			} else {
@@ -511,6 +526,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) (added, remove
 		for mn, fm := range fi.Methods {
 			if em, ok := ei.Methods[mn]; ok {
 				em.SignatureText = fm.SignatureText
+				em.IsAsync = fm.IsAsync
 				em.File, em.Line, em.Source = fm.File, fm.Line, fm.Source
 				em.Why = extract.PreferFresh(em.Why, fm.Why)
 			} else {
@@ -529,6 +545,7 @@ func mergeFreshIntoExisting(existing, fresh *extract.PackageInfo) (added, remove
 			continue
 		}
 		ef.SignatureText = ff.SignatureText
+		ef.IsAsync = ff.IsAsync
 		ef.File, ef.Line, ef.Source = ff.File, ff.Line, ff.Source
 		ef.Why = extract.PreferFresh(ef.Why, ff.Why)
 	}
@@ -590,6 +607,9 @@ func compareStructs(declared, actual *extract.PackageInfo, file, srcStr string, 
 			if !sigMatch(dm.SignatureText, am.SignatureText) {
 				result.add(SevError, file, srcStr, fmt.Sprintf("%s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
 			}
+			if dm.IsAsync != am.IsAsync {
+				result.add(SevError, file, srcStr, fmt.Sprintf("%s: method %s async mismatch: .lyric async=%v, source async=%v", name, mn, dm.IsAsync, am.IsAsync))
+			}
 		}
 	}
 }
@@ -611,6 +631,9 @@ func compareInterfaces(declared, actual *extract.PackageInfo, file, srcStr strin
 			if !sigMatch(dm.SignatureText, am.SignatureText) {
 				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s signature mismatch: .lyric=%q, source=%q", name, mn, dm.SignatureText, am.SignatureText))
 			}
+			if dm.IsAsync != am.IsAsync {
+				result.add(SevError, file, srcStr, fmt.Sprintf("interface %s: method %s async mismatch: .lyric async=%v, source async=%v", name, mn, dm.IsAsync, am.IsAsync))
+			}
 		}
 	}
 }
@@ -625,6 +648,9 @@ func compareFunctions(declared, actual *extract.PackageInfo, file, srcStr string
 		}
 		if !sigMatch(df.SignatureText, af.SignatureText) {
 			result.add(SevError, file, srcStr, fmt.Sprintf("function %s signature mismatch: .lyric=%q, source=%q", name, df.SignatureText, af.SignatureText))
+		}
+		if df.IsAsync != af.IsAsync {
+			result.add(SevError, file, srcStr, fmt.Sprintf("function %s async mismatch: .lyric async=%v, source async=%v", name, df.IsAsync, af.IsAsync))
 		}
 	}
 }
